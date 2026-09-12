@@ -34,6 +34,7 @@ def main():
     backend = PreviewBackend()
     win = MainWindow(backend, animated_bg=False)
     win.shift_label.setText("Smena #14")
+    win.fill_catalog(backend.products)
     for width,height in [(1366,768), (1280,720), (1920,1080)]:
         win.resize(width,height)
         win.show()

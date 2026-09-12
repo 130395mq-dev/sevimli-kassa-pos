@@ -528,7 +528,8 @@ class MainWindow(QMainWindow):
     def _receipt_panel(self) -> QWidget:
         panel = QWidget()
         panel.setFixedWidth(t.RECEIPT_WIDTH)
-        panel.setStyleSheet(f"background: {t.BG}; border-radius: {t.RADIUS}px;")
+        panel.setObjectName("receiptPanel")
+        panel.setStyleSheet(f"QWidget#receiptPanel {{ background: {t.BG}; border-radius: {t.RADIUS}px; }}")
         col = QVBoxLayout(panel)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
