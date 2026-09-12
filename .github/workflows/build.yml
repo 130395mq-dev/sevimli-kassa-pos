@@ -1,0 +1,125 @@
+name: Kassa EXE
+
+# Kompyuterda hech narsa yig'ilmaydi — hammasini GitHub qiladi:
+#
+#   1. Har push'da (main) — testlar (Linux).
+#   2. Testlar o'tsa — Windows x64 EXE (onedir) yig'iladi, ZIP qilinadi.
+#   3. ZIP GitHub Release'ga qo'yiladi (v<versiya>).
+#   4. Server (hub) 10 daqiqada bir Release'ga qaraydi va yangi ZIP'ni
+#      O'ZI olib panelning «Versiyalar» ro'yxatiga qo'shadi
+#      (sales/releases.py). Kassalar 30 daqiqa ichida o'zini yangilaydi.
+#      Hech qanday maxfiy kalit kerak emas.
+#
+# Versiya raqami — pos/version.py. Shu raqam avval chiqarilgan bo'lsa,
+# Release yangilanmaydi (xato emas — raqamni oshirib qayta push qilinadi).
+#
+# Ish stolidagi KASSA-GITHUBGA-YUKLASH.bat shu jarayonni boshlaydi.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Testlar (Linux)
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Kutubxonalar
+        run: |
+          pip install -r requirements.txt
+          sudo apt-get update -qq && sudo apt-get install -y -qq libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1 libglib2.0-0 >/dev/null
+      - name: Modullar yuklanadimi
+        run: python -c "import pos.main, pos.ui.main_window, pos.ui.payment_dialog, pos.ui.split_payment, pos.ui.login_screen, pos.ui.dialogs"
+      - name: Kassa testlari
+        run: |
+          python -m unittest pos.test_pos pos.test_store pos.test_links pos.test_update pos.test_split pos.test_session
+          python -m shared.test_receipt
+
+  build:
+    name: Windows x64 EXE → Release
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Versiya (pos/version.py)
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path "pos\version.py" -Pattern 'VERSION\s*=\s*"([^"]+)"'
+          if (-not $m) { throw "pos/version.py dan versiya o'qilmadi" }
+          $v = $m.Matches[0].Groups[1].Value
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Versiya: $v"
+
+      - name: Kutubxonalar
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller==6.11.1
+
+      - name: UCRT (eski Windows uchun)
+        shell: pwsh
+        run: |
+          if (Test-Path "build\ucrt.zip") {
+            Expand-Archive -Path "build\ucrt.zip" -DestinationPath "build\ucrt" -Force
+            Write-Host ("UCRT: " + (Get-ChildItem build\ucrt -Filter *.dll).Count + " ta dll")
+          }
+
+      - name: Inter shrifti (bo'lmasa Segoe UI ishlaydi)
+        shell: pwsh
+        continue-on-error: true
+        run: python pos/fonts/fetch_inter.py
+
+      - name: Yig'ish (onedir)
+        run: pyinstaller build/SevimliKassa.spec --noconfirm --clean
+
+      - name: Tekshirish
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist\SevimliKassa\SevimliKassa.exe")) { throw "SevimliKassa.exe yig'ilmadi" }
+          if (-not (Test-Path "dist\SevimliKassa\_internal\ucrtbase.dll")) { Write-Warning "ucrtbase.dll qadalmadi (eski Windows'da ochilmasligi mumkin)" }
+          Compress-Archive -Path dist/SevimliKassa -DestinationPath dist/SevimliKassa.zip -Force
+          $mb = [math]::Round((Get-Item dist/SevimliKassa.zip).Length / 1MB, 1)
+          Write-Host "ZIP: $mb MB"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SevimliKassa-${{ steps.ver.outputs.version }}
+          path: dist/SevimliKassa.zip
+
+      - name: Bu versiya avval chiqarilganmi? (teg bormi)
+        id: tag
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $found = git ls-remote --tags origin "refs/tags/v$v"
+          if ($found) {
+            Write-Warning "v$v tegi allaqachon bor — Release yangilanmaydi. pos/version.py dagi raqamni oshiring."
+            "new=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "new=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+      - name: GitHub Release (hub 10 daqiqada bir shu yerdan oladi)
+        if: steps.tag.outputs.new == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: Sevimli Kassa ${{ steps.ver.outputs.version }}
+          body: ${{ github.event.head_commit.message }}
+          files: dist/SevimliKassa.zip

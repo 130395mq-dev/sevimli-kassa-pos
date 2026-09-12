@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build
+build/SevimliKassa/
+build/*.toc
+dist/
+*.spec.bak
+
+# Muhit
+.venv/
+venv/
+
+# Render/test chiqishlari
+pos-*.png
+
+# Lokal sozlama (config.json foydalanuvchi mashinasida)
+config.json
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+build/ucrt/
+dist/
+
+# Yuklash skripti vaqtinchaliklari
+PortableGit/
+pgit.exe
+*.log
+kassa-yuklash-log.txt
+
+# Ish rejasining nusxasi (ps1 uni .github/workflows/build.yml ga ko'chiradi)
+github-workflow-build.yml

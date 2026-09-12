@@ -1,0 +1,4 @@
+# Sevimli Kassa POS terminal — kutubxonalar.
+# Versiya oralig'i: kassalarda turli Python bo'lishi mumkin.
+PySide6>=6.6,<7
+pywin32>=306 ; sys_platform == "win32"

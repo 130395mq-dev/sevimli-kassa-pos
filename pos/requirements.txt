@@ -1,0 +1,7 @@
+# Kassa ilovasi uchun.
+#
+# Versiya qat'iy qadab qo'yilmagan: kassalarda turli Python versiyalari
+# bo'lishi mumkin, va qadalgan versiya o'sha Python uchun chiqmagan
+# bo'lsa o'rnatish umuman to'xtaydi.
+
+PySide6>=6.6,<7
