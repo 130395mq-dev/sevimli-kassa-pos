@@ -300,6 +300,8 @@ def main() -> int:
 
     def _enter_kassa(sh: dict) -> None:
         session["shift"] = sh
+        if sh.get("id"):
+            store.set("active_shift_id", str(sh["id"]))
         sale_no["n"] = int(sh.get("next_receipt_number") or 1)
         window.shift_label.setText(_shift_caption(sh))
         window.centralWidget().setEnabled(True)
@@ -464,6 +466,7 @@ def main() -> int:
         who = data["cashier"]
         store.set("resume_after_update", "")  # eski bir martalik belgi kerak emas
 
+        hub.session = data.get("session") or ""
         if not session["offline"]:
             try:
                 res = hub.resume_session(int(who.get("id") or 0))
@@ -1014,7 +1017,12 @@ def main() -> int:
         except Exception:
             pass
 
-        pending = store.pending_count()
+        pending = store.unsent_count()
+        if pending:
+            QMessageBox.warning(window, tr("Smena yopilmadi"),
+                f"{pending} ta chek hali serverga yetmagan. Internetni tekshiring "
+                "va ma'lumotlarni yangilang. Cheklar yuborilgach smenani yoping.")
+            return
         dialog = CloseShiftDialog(pending, window)
         if dialog.exec() != CloseShiftDialog.Accepted:
             return
@@ -1036,6 +1044,7 @@ def main() -> int:
         # login-parol qayta so'ralmaydi, «SMENA OCHISH» tugmasi chiqadi.
         # Boshqa kassir kirishi kerak bo'lsa — o'sha ekrandagi «Chiqish».
         session["shift"] = None
+        store.set("active_shift_id", "")
         window.shift_label.setText("")
         if session.get("cashier"):
             _show_open_shift()
@@ -1471,6 +1480,7 @@ def main() -> int:
                 try:
                     # Internetsiz ochilgan smena bo'lsa — avval uni serverга
                     # ochamiz (idempotent), keyin cheklar shunga tushadi.
+                    bg_hub.session = getattr(hub, "session", "") or ""
                     synced = bg_backend.sync_shift()
                     if synced:
                         bridge.shift_synced.emit(synced)
@@ -1484,6 +1494,8 @@ def main() -> int:
             # farq olinadi. Natija main oqimga signal bilan qaytadi.
             if refresh_now.is_set():
                 refresh_now.clear()
+                bg_store.retry_stuck()
+                flush_now.set()
                 last_cat = now
                 try:
                     # 0-bosqich: savdo nuqtasi sozlamalari (hello) —
@@ -1540,7 +1552,7 @@ def main() -> int:
                 except Exception:
                     online = False
                 try:
-                    bridge.status.emit(online, bg_store.pending_count())
+                    bridge.status.emit(online, bg_store.unsent_count())
                 except Exception:
                     pass
                 if fresh is not None:

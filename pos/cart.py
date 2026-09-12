@@ -40,6 +40,7 @@ class Product:
     stock: float = 0.0
     #: Hamma narx turlari: {narx_turi_id: tiyin}. `price` — joriy turdagisi.
     prices: dict = field(default_factory=dict)
+    price_quote: str = ""
 
     def price_for(self, price_type_id: str | None) -> int:
         """Berilgan narx turidagi narx; u yo'q yoki 0 bo'lsa — asosiy narx."""

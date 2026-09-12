@@ -104,6 +104,13 @@ class Store:
                 "ALTER TABLE products ADD COLUMN prices TEXT NOT NULL DEFAULT '{}'"
             )
 
+        if "price_quote" not in cols:
+            self.db.execute("ALTER TABLE products ADD COLUMN price_quote TEXT NOT NULL DEFAULT ''")
+        # Recover old receipts sidelined by temporary outages, once per upgrade.
+        if not self.get("outbox_retry_v2"):
+            self.db.execute("UPDATE outbox SET attempts=0 WHERE sent=0")
+            self.set("outbox_retry_v2", "1")
+
     def set_price_type(self, price_type_id: str | None) -> None:
         """Kassa qaysi narx turida sotadi — saqlanadi, qayta ochilganda ham
         shu qoladi (kassir smena boshida bir marta tanlaydi)."""
@@ -157,15 +164,15 @@ class Store:
             """
             INSERT INTO products
                 (id, ms_id, name, code, barcode, price, is_weight, plu, tracked,
-                 stock, prices)
+                 stock, prices, price_quote)
             VALUES (:id, :ms_id, :name, :code, :barcode, :price,
-                    :is_weight, :plu, :tracked, :stock, :prices)
+                    :is_weight, :plu, :tracked, :stock, :prices, :price_quote)
             ON CONFLICT(id) DO UPDATE SET
                 ms_id=excluded.ms_id, name=excluded.name, code=excluded.code,
                 barcode=excluded.barcode, price=excluded.price,
                 is_weight=excluded.is_weight, plu=excluded.plu,
                 tracked=excluded.tracked, stock=excluded.stock,
-                prices=excluded.prices
+                prices=excluded.prices, price_quote=excluded.price_quote
             """,
             [
                 {
@@ -180,6 +187,7 @@ class Store:
                     "tracked": int(bool(r.get("tracked"))),
                     "stock": float(r.get("stock") or 0),
                     "prices": json.dumps(r.get("prices") or {}),
+                    "price_quote": r.get("price_quote") or "",
                 }
                 for r in rows
             ],
@@ -219,7 +227,7 @@ class Store:
             barcode=row["barcode"] or "",
             is_weight=bool(row["is_weight"]), plu=row["plu"],
             tracked=bool(row["tracked"]), stock=row["stock"],
-            prices=prices,
+            prices=prices, price_quote=row["price_quote"],
         )
         # Joriy narx turi (ulgurji tanlangan bo'lsa) — narx shu yerda
         # almashadi; katalog ham, chek ham shu narxni ko'radi.
@@ -322,6 +330,18 @@ class Store:
             "UPDATE outbox SET sent = 1, last_error = '' WHERE local_uuid = ?",
             (local_uuid,),
         )
+
+    def note_outage(self, local_uuid: str, error: str) -> None:
+        """Temporary failures never consume the validation retry budget."""
+        self.db.execute("UPDATE outbox SET last_error=? WHERE local_uuid=?",
+                        (error[:500], local_uuid))
+
+    def unsent_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM outbox WHERE sent=0").fetchone()[0]
+
+    def retry_stuck(self) -> None:
+        self.db.execute("UPDATE outbox SET attempts=0 WHERE sent=0 AND attempts>=?",
+                        (self.MAX_ATTEMPTS,))
 
     def mark_failed(self, local_uuid: str, error: str) -> None:
         self.db.execute(

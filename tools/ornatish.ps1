@@ -81,7 +81,7 @@ foreach ($r in $repos) {
     if (Test-Path (Join-Path $dir '.git')) {
         Set-Location $dir
         & $git config core.autocrlf false 2>&1 | Out-Null
-        & $git pull --rebase -X theirs origin main 2>&1 | Out-Null
+        & $git pull --rebase origin main 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             & $git rebase --abort 2>&1 | Out-Null
             Warn "yangilab bo'lmadi: $dir (avto-yuklash keyin qayta urinadi)"

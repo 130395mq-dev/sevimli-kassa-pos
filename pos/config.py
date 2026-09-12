@@ -51,7 +51,7 @@ class Config:
     outbox_interval: int = 20
     #: Bo'sh kassa oynasidagi jonli supermarket foni. Juda zaif
     #: kompyuterda false qilib qo'yish mumkin (statik fon bo'ladi).
-    animated_bg: bool = True
+    animated_bg: bool = False
 
     @property
     def receipt_width(self) -> int:

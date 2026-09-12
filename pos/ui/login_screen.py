@@ -269,6 +269,11 @@ class LoginScreen(QWidget):
         )
         col = QVBoxLayout(panel)
         col.setContentsMargins(44, 40, 44, 30)
+        col.addWidget(_text("SEVIMLI", 30, "#FFFFFF", bold=True, spacing=2))
+        col.addSpacing(10)
+        intro = _text(tr("Har kun siz bilan"), 16, "#C5DFD0")
+        intro.setWordWrap(True)
+        col.addWidget(intro)
         col.addStretch(1)
 
         logo = QLabel()
@@ -312,8 +317,8 @@ class LoginScreen(QWidget):
             f" border-radius: 20px; }}"
         )
         shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(46)
-        shadow.setOffset(0, 12)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 6)
         shadow.setColor(QColor(28, 21, 23, 34))
         card.setGraphicsEffect(shadow)
 

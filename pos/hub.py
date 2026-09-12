@@ -122,6 +122,8 @@ class Hub:
             if e.code == 409 and ("login" in path or "session/resume" in path):
                 # Bu login boshqa kompyuterda ishlayapti — xabar serverdan
                 raise HubBusyError(detail or "Bu login boshqa kassada ishlayapti") from e
+            if e.code >= 500 or e.code in (408, 429):
+                raise HubConnError(detail or f"Server vaqtincha band: {e.code}") from e
             raise HubError(detail or f"Server xatosi {e.code}") from e
         except urllib.error.URLError as e:
             raise HubConnError(f"Serverga ulanib bo'lmadi: {e.reason}") from e
@@ -305,6 +307,7 @@ def sale_payload(cart: Cart, plan: PaymentPlan, local_uuid: str,
                 "barcode": line.product.barcode,
                 "quantity": str(line.quantity),
                 "price": line.product.price,
+                "price_quote": line.product.price_quote,
                 "total": line.net(extra),
                 "mark_code": line.mark_code,
             }
@@ -512,20 +515,21 @@ class LiveBackend:
         created_at = datetime.now(timezone.utc).isoformat()
         payload = sale_payload(cart, plan, local_uuid, created_at)
         payload["price_type"] = self.price_type_name
+        payload["price_type_id"] = self.price_type_id
+        self._bind_shift(payload)
 
         self.store.queue(local_uuid, payload, created_at)
 
-        # DIQQAT: chek endi diskда — xavfsiz saqlandi. Shu nuqtadan keyin
-        # HECH QANDAY xato yuqoriga chiqmasligi kerak. Aks holda kassir
-        # «Saqlanmadi» degan xatoni ko'rib, chekni QAYTA uradi — natijada
-        # ikki marta pul olinadi (navbatdagisi baribir yuboriladi).
-        # Shuning uchun faqat HubError emas, HAR QANDAY xatoni ushlaymiz
-        # (masalan server 200 qaytarib buzuq JSON bersa).
-        try:
-            self.hub.send_sale(payload)
-            self.store.mark_sent(local_uuid)
-        except Exception as e:  # noqa: BLE001 — ataylab keng
-            logger.info("Chek navbatda qoldi: %s", e)
+        # Background flush owns the network. The cashier never waits for HTTP.
+
+    def _bind_shift(self, payload: dict) -> None:
+        local = self.store.get_local_shift()
+        if local:
+            payload["shift_local_uuid"] = local["local_uuid"]
+        else:
+            shift_id = self.store.get("active_shift_id")
+            if shift_id:
+                payload["shift_id"] = int(shift_id)
 
     def submit_return(self, origin: dict, lines: list[dict],
                       refund_method: str) -> int:
@@ -537,16 +541,9 @@ class LiveBackend:
         local_uuid = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
         payload = return_payload(origin, lines, refund_method, local_uuid, created_at)
+        self._bind_shift(payload)
 
         self.store.queue(local_uuid, payload, created_at)
-        # Diskка yozildi — endi xato yuqoriga chiqmaydi (ikki marta
-        # qaytarishning oldini oladi). Navbatdagisi keyin yuboriladi.
-        try:
-            self.hub.send_sale(payload)
-            self.store.mark_sent(local_uuid)
-        except Exception as e:  # noqa: BLE001 — ataylab keng
-            logger.info("Qaytarish navbatda qoldi: %s", e)
-
         return payload["net_total"]
 
     def returnable_sales(self) -> list[dict]:
@@ -566,6 +563,7 @@ class LiveBackend:
         opened_at = datetime.now(timezone.utc).isoformat()
         try:
             sh = self.hub.open_shift(cashier.get("id", 0), opening_cash)["shift"]
+            self.store.set("active_shift_id", str(sh["id"]))
             self.store.set_local_shift(None)  # onlayn — mahalliy kerak emas
             return sh
         except HubConnError as e:
@@ -625,6 +623,7 @@ class LiveBackend:
             return None
         # Serverga ochildi — endi mahalliy belgini olib tashlaymiz.
         # Navbatdagi cheklar shu ochiq smenaga tushadi.
+        self.store.set("active_shift_id", str(sh["id"]))
         self.store.set_local_shift(None)
         logger.info("Internetsiz ochilgan smena serverга sinxronlandi: #%s",
                     sh.get("number"))
@@ -645,7 +644,7 @@ class LiveBackend:
                 # Ulanish yoki token xatosi — sabab UMUMIY (internet yo'q
                 # yoki kassa uzilgan). Qolganini urinishning ma'nosi yo'q,
                 # to'xtaymiz.
-                self.store.mark_failed(row["local_uuid"], str(e))
+                self.store.note_outage(row["local_uuid"], str(e))
                 break
             except HubError as e:
                 # Server AYNAN shu chekni rad etdi (masalan validatsiya
@@ -697,7 +696,8 @@ class LiveBackend:
                 logger.warning("Serverdan darhol tortish bo'lmadi: %s", e)
         step(1)
 
-        since = self.store.get("catalog_since")
+        since = self.store.get("catalog_since") if self.store.get("price_quotes_v1") else ""
+        snapshot_time = ""
         after = None
         stats = {"new": 0, "updated": 0, "gone": 0}
         first = True
@@ -706,6 +706,7 @@ class LiveBackend:
             page = self.hub.catalog_page(since=since, after=after)
             rows = page.get("products") or []
             if first:
+                snapshot_time = page.get("server_time", "")
                 step(2)
                 first = False
             if rows:
@@ -715,7 +716,8 @@ class LiveBackend:
 
             after = page.get("next_after")
             if not after:
-                self.store.set("catalog_since", page.get("server_time", ""))
+                self.store.set("catalog_since", snapshot_time)
+                self.store.set("price_quotes_v1", "1")
                 break
 
         stats["server"] = server

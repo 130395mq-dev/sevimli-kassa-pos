@@ -16,7 +16,7 @@
 #  o'zgarishlar ham shu yerga O'ZI TUSHADI — har safar avval
 #  `git fetch` + `rebase`, keyin push. `--force` HECH QACHON ishlatilmaydi:
 #  ikki tomon bir faylni o'zgartirgan bo'lsa, shu kompyuterdagi nusxa
-#  ustun (rebase -X theirs); hal bo'lmasa — bekor qilinadi va logga yoziladi.
+#  ustun (rebase); hal bo'lmasa — bekor qilinadi va logga yoziladi.
 #
 #  Himoya: oxirgi fayl 2 daqiqa ichida o'zgargan bo'lsa — kutadi
 #  (yozish tugallanmagan bo'lishi mumkin). Log: C:\Sevimli\avto_yuklash.log
@@ -84,7 +84,7 @@ try {
         # Chala qolgan rebase bo'lsa (oldingi urinish o'rtasida to'xtagan) — bekor
         if ((Test-Path (Join-Path $dir '.git\rebase-merge')) -or (Test-Path (Join-Path $dir '.git\rebase-apply'))) {
             & $git rebase --abort 2>&1 | Out-Null
-            Log "$name: chala rebase bekor qilindi"
+            Log "${name}: chala rebase bekor qilindi"
         }
 
         # --- 1. Shu kompyuterdagi o'zgarishlarni commit qilamiz
@@ -95,7 +95,7 @@ try {
                 Where-Object { $_.FullName -notmatch '\\\.git\\|\\dist\\|__pycache__|\\build\\ucrt\\|\\PortableGit\\' } |
                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
             if ($newest -and ((Get-Date) - $newest.LastWriteTime).TotalSeconds -lt $QUIET) {
-                Log "$name: o'zgarish bor, yozish tugashini kutyapman ($($newest.Name))"
+                Log "${name}: o'zgarish bor, yozish tugashini kutyapman ($($newest.Name))"
                 continue
             }
 
@@ -135,30 +135,30 @@ try {
 
             & $git add -A 2>&1 | Out-Null
             & $git commit -q -m $msg 2>&1 | Out-Null
-            Log "$name: commit - $msg"
+            Log "${name}: commit - $msg"
         }
 
         # --- 2. GitHub'dagi yangiliklarni olamiz (rebase, force yo'q)
         $fetchOut = & $git fetch -q origin main 2>&1
-        if ($LASTEXITCODE -ne 0) { Log "$name: fetch bo'lmadi ($fetchOut)"; continue }
+        if ($LASTEXITCODE -ne 0) { Log "${name}: fetch bo'lmadi ($fetchOut)"; continue }
         $behind = [int](& $git rev-list --count 'HEAD..origin/main' 2>$null)
         if ($behind -gt 0) {
-            # -X theirs: bir faylni ikki tomon o'zgartirgan bo'lsa shu kompyuterdagi nusxa qoladi
-            $rb = & $git rebase -X theirs origin/main 2>&1
+            #: bir faylni ikki tomon o'zgartirgan bo'lsa shu kompyuterdagi nusxa qoladi
+            $rb = & $git rebase origin/main 2>&1
             if ($LASTEXITCODE -ne 0) {
                 & $git rebase --abort 2>&1 | Out-Null
-                Log "$name: XATO GitHub bilan birlashtirib bo'lmadi, keyingi safar qayta urinaman: $rb"
+                Log "${name}: XATO GitHub bilan birlashtirib bo'lmadi, keyingi safar qayta urinaman: $rb"
                 continue
             }
-            Log "$name: GitHub'dan $behind ta yangilanish olindi"
+            Log "${name}: GitHub'dan $behind ta yangilanish olindi"
         }
 
         # --- 3. Yuboramiz
         $ahead = [int](& $git rev-list --count 'origin/main..HEAD' 2>$null)
         if ($ahead -le 0) { continue }
         $out = & $git push origin HEAD:main 2>&1
-        if ($LASTEXITCODE -eq 0) { Log "$name: GitHub'ga ketdi ($ahead ta commit)" }
-        else { Log "$name: XATO push (keyingi safar qayta urinaman): $out" }
+        if ($LASTEXITCODE -eq 0) { Log "${name}: GitHub'ga ketdi ($ahead ta commit)" }
+        else { Log "${name}: XATO push (keyingi safar qayta urinaman): $out" }
     }
 } catch {
     Log "XATO: $($_.Exception.Message)"
