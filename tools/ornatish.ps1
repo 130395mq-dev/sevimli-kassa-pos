@@ -8,7 +8,10 @@
 #         C:\Sevimli\kassa   ← github.com/130395mq-dev/sevimli-kassa-pos
 #    3. «Планировщик заданий» ga vazifa qo'yadi: har 5 daqiqada
 #       tools\avto_yuklash.ps1 — papkada o'zgarish bo'lsa GitHub'ga o'zi
-#       yuboradi (kod yozildi = yangilanish kassalarga ketdi).
+#       yuboradi (kod yozildi = yangilanish kassalarga ketdi), GitHub'dagi
+#       yangiliklarni esa papkaga o'zi tushiradi.
+#
+#  Qayta ishga tushirish xavfsiz: bor narsani buzmaydi, faqat yangilaydi.
 #    4. Kassa dasturining eng so'nggi versiyasini GitHub Release'dan
 #       yuklab, o'rnatadi (dastur o'zini %LOCALAPPDATA%\SevimliKassa ga
 #       o'rnatadi, ish stolida yorliq, avto-ishga tushish).
@@ -72,13 +75,20 @@ Ok (& $git --version)
 foreach ($r in $repos) {
     $dir = Join-Path $root $r.name
     Step "Repo: $($r.name)  ($($r.url))"
+    # core.autocrlf=false KLON PAYTIDAYOQ: aks holda fayllar CRLF bilan
+    # tushadi, keyin sozlama o'zgarganda git hammasini «o'zgargan» deb
+    # ko'rsatadi va avto-yuklash minglab faylni bekorga commit qiladi.
     if (Test-Path (Join-Path $dir '.git')) {
         Set-Location $dir
-        & $git pull --ff-only origin main 2>&1 | Out-Null
-        Ok "yangilandi: $dir"
+        & $git config core.autocrlf false 2>&1 | Out-Null
+        & $git pull --rebase -X theirs origin main 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            & $git rebase --abort 2>&1 | Out-Null
+            Warn "yangilab bo'lmadi: $dir (avto-yuklash keyin qayta urinadi)"
+        } else { Ok "yangilandi: $dir" }
     } else {
         if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
-        & $git clone -q $r.url $dir
+        & $git -c core.autocrlf=false clone -q $r.url $dir
         if ($LASTEXITCODE -ne 0) { throw "Ko'chirib olinmadi: $($r.url)" }
         Ok "ko'chirib olindi: $dir"
     }
@@ -93,7 +103,9 @@ Set-Location $root
 #  Birinchi o'rnatishda repo'da tools/ hali bo'lmasligi mumkin — shu
 #  skript yonidagi nusxalarni joyiga qo'yib, GitHub'ga yuboramiz.
 Step "Skriptlar (tools\)"
-$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$here = ''
+if ($MyInvocation.MyCommand.Path) { $here = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $here) { $here = Join-Path $root 'kassa\tools' }   # `irm ... | iex` orqali ochilganda
 $toolsDir = Join-Path $root 'kassa\tools'
 New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
 $copied = $false
@@ -112,7 +124,7 @@ if ($copied) {
     Set-Location (Join-Path $root 'kassa')
     & $git add -A 2>&1 | Out-Null
     & $git commit -q -m 'Avto yuklash skriptlari (tools/)' 2>&1 | Out-Null
-    & $git push origin main 2>&1 | Out-Null
+    & $git push origin HEAD:main 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Ok "tools/ GitHub'ga yuborildi" } else { Warn "tools/ GitHub'ga yuborilmadi (keyin avto yuboradi)" }
     Set-Location $root
 } else { Ok "tools/ joyida" }

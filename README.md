@@ -83,6 +83,29 @@ bo'lsa — yangilanmaydi, ogohlantirish). Server (hub) 10 daqiqada bir
 Release'ga qaraydi va yangi ZIP'ni o'zi «Versiyalar» ga qo'shadi
 (`sales/releases.py`) — hech qanday kalit kerak emas. Lokal yig'ish — zaxira.
 
+## Avto yuklash — `C:\Sevimli` (`tools/`)
+
+Egasining kompyuterida hech narsa bosilmaydi. `tools/ornatish.ps1` bir marta
+ishga tushiriladi: `C:\Sevimli\PortableGit` (git), `C:\Sevimli\server`
+(hub repo) va `C:\Sevimli\kassa` (shu repo) papkalarini yaratadi va
+«Планировщик заданий» ga har 5 daqiqada `tools/avto_yuklash.ps1` ni qo'yadi.
+
+`avto_yuklash.ps1` har safar, har ikki repo uchun:
+
+1. papkadagi o'zgarishlarni commit qiladi (oxirgi fayl 2 daqiqa tinch
+   turgan bo'lsa); kassada `pos/`, `shared/`, `build/` o'zgargan bo'lsa
+   `pos/version.py` dagi kichik raqamni o'zi oshiradi (skript/hujjat
+   o'zgarsa — oshirmaydi, bekorga EXE yig'ilmaydi);
+2. GitHub'dan yangiliklarni oladi (`fetch` + `rebase -X theirs` — ikki tomon
+   bir faylni o'zgartirgan bo'lsa kompyuterdagi nusxa ustun);
+3. `push` qiladi — **`--force` hech qachon ishlatilmaydi**; birlashtirib
+   bo'lmasa bekor qilib, `C:\Sevimli\avto_yuklash.log` ga yozadi va
+   keyingi safar qayta urinadi.
+
+Shu tufayli GitHub'da (masalan, Claude sessiyasida) qilingan o'zgarishlar
+kompyuterdagi papkaga ham o'zi tushadi. `PortableGit/`, `*.log`, `*.lock`
+`.gitignore` da — repo'ga tushmaydi.
+
 ## Avtomatik yangilanish
 
 1. Yangi versiya yig'iladi (`pos/version.py` dagi raqam oshiriladi).
