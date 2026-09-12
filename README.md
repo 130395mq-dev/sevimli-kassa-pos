@@ -103,7 +103,17 @@ ishga tushiriladi: `C:\Sevimli\PortableGit` (git), `C:\Sevimli\server`
    keyingi safar qayta urinadi.
 
 Shu tufayli GitHub'da (masalan, Claude sessiyasida) qilingan o'zgarishlar
-kompyuterdagi papkaga ham o'zi tushadi. `PortableGit/`, `*.log`, `*.lock`
+kompyuterdagi papkaga ham o'zi tushadi.
+
+Avto-yuklash skriptining o'zi eskirgan bo'lsa (u GitHub'dan olmasa), bir
+marta PowerShell'da:
+
+```powershell
+irm https://raw.githubusercontent.com/130395mq-dev/sevimli-kassa-pos/main/tools/yangila.ps1 | iex
+```
+
+`tools/yangila.ps1` ikkala papkani GitHub ustiga rebase qiladi (commit
+qilinmagan o'zgarishlar saqlanadi), hech narsa push qilmaydi. `PortableGit/`, `*.log`, `*.lock`
 `.gitignore` da — repo'ga tushmaydi.
 
 ## Avtomatik yangilanish
