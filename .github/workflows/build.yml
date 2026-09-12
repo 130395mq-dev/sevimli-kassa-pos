@@ -47,6 +47,15 @@ jobs:
           python -m unittest pos.test_pos pos.test_store pos.test_links pos.test_update pos.test_split pos.test_session pos.test_reliability
           python -m shared.test_receipt
 
+      - name: Validate PowerShell scripts
+        shell: pwsh
+        run: |
+          foreach ($file in Get-ChildItem tools/*.ps1) {
+            $parseTokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$parseTokens, [ref]$parseErrors)
+            if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+          }
       - name: Render UI at supported screen sizes
         run: python -m pos.render_preview
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

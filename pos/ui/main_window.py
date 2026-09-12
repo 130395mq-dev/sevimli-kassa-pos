@@ -1025,7 +1025,7 @@ class MainWindow(QMainWindow):
         self.price_btn.show()
         if is_default:
             self.price_btn.setStyleSheet(
-                "QPushButton { background: rgba(255,255,255,0.16); color: #FFFFFF;"
+                "QPushButton { background: #E8F4ED; color: #103D32;"
                 " border: none; border-radius: 8px; padding: 0 14px; }"
                 "QPushButton:pressed { background: rgba(16,61,50,0.16); }"
             )

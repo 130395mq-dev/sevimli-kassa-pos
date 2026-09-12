@@ -103,7 +103,7 @@ foreach ($r in $repos) {
     if ($LASTEXITCODE -ne 0) { Bad "GitHub'dan olib bo'lmadi (internet? kirish?)"; continue }
     $behind = [int]((& $git -C $dir rev-list --count 'HEAD..origin/main' 2>$null) -join '')
     if ($behind -eq 0) { Ok "allaqachon yangi ($before)"; continue }
-    & $git -C $dir rebase -X theirs --autostash origin/main 2>&1 | Out-Null
+    & $git -C $dir rebase --autostash origin/main 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         & $git -C $dir rebase --abort 2>&1 | Out-Null
         Bad "birlashtirib bo'lmadi - shu oynani suratga oling"

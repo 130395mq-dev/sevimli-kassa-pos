@@ -56,6 +56,9 @@ def main():
     login.show()
     app.processEvents()
     login.grab().save(str(out / "login.png"))
+    import base64
+    for name in ("kassa-cart.png", "login.png", "payment.png"):
+        print("PREVIEW_PNG:" + name + ":" + base64.b64encode((out / name).read_bytes()).decode())
     print("UI screenshots rendered successfully")
 
 if __name__ == "__main__":
