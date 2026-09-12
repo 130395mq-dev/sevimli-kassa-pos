@@ -68,9 +68,9 @@ def _label(text="", size=14, color=t.INK, bold=False) -> QLabel:
 # ko'rinmaydi. Sensorli ekranда chiroyliroq va toza.
 _SCROLLBAR_QSS = """
 QScrollBar:vertical { background: transparent; width: 9px; margin: 3px 2px; }
-QScrollBar::handle:vertical { background: rgba(180,220,200,0.28);
+QScrollBar::handle:vertical { background: rgba(80,110,94,0.28);
     border-radius: 4px; min-height: 48px; }
-QScrollBar::handle:vertical:hover { background: rgba(180,220,200,0.48); }
+QScrollBar::handle:vertical:hover { background: rgba(80,110,94,0.48); }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0; background: transparent; border: none; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
@@ -159,16 +159,16 @@ class _CatalogDelegate(QStyledItemDelegate):
     STOCK = Qt.UserRole + 6
 
     # Karta o'lchamlari — rasmsiz, ixcham. Nom uchun 4 qatorgacha joy bor.
-    CARD_W, CARD_H = 150, 116
+    CARD_W, CARD_H = 174, 134
     MARGIN = 5           # karta atrofidagi bo'sh joy (grid katak ichida)
     STAR_BOX = 24        # yuqori-o'ngdagi yulduzcha zonasi
     RAD = 10             # burchak radiusi (avvalgidan kichikroq)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._name_font = QFont(); self._name_font.setPixelSize(12); self._name_font.setBold(True)
-        self._price_font = QFont(); self._price_font.setPixelSize(15); self._price_font.setBold(True)
-        self._unit_font = QFont(); self._unit_font.setPixelSize(10.5)
+        self._name_font = QFont(); self._name_font.setPixelSize(14); self._name_font.setBold(True)
+        self._price_font = QFont(); self._price_font.setPixelSize(19); self._price_font.setBold(True)
+        self._unit_font = QFont(); self._unit_font.setPixelSize(11)
         self._tag_font = QFont(); self._tag_font.setPixelSize(10); self._tag_font.setBold(True)
         self._tag_text = tr("yo'q")
 
@@ -198,16 +198,10 @@ class _CatalogDelegate(QStyledItemDelegate):
         # Yumshoq soya — kartani fondan ko'taradi (3D). To'q fonda soya
         # to'qroq, hover/selected'da chuqurroq.
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 90 if (hover or selected) else 55))
+        painter.setBrush(QColor(16, 61, 50, 16 if (hover or selected) else 7))
         painter.drawRoundedRect(card.adjusted(0, 4, 0, 5), rad, rad)
 
-        # Karta foni — nozik vertikal gradient (tepasi ochroq = yorug'lik).
-        grad = QLinearGradient(card.topLeft(), card.bottomLeft())
-        top = QColor(t.BG).lighter(122)
-        grad.setColorAt(0.0, top)
-        grad.setColorAt(0.5, QColor(t.BG))
-        grad.setColorAt(1.0, QColor(t.BG).darker(112))
-        painter.setBrush(grad)
+        painter.setBrush(QColor(t.ACCENT_PALE if selected else t.BG))
         if selected:
             painter.setPen(QPen(QColor(t.ACCENT), 2))
         elif hover:
@@ -342,17 +336,38 @@ class MainWindow(QMainWindow):
         # Markaziy widget — «shimol yog'dusi» fon (tun rejimi). UI shu
         # ustiga joylashadi; layout/joylashuv o'zgarmaydi. animated_bg
         # o'chiq bo'lsa — chiroyli statik fon qoladi.
-        from .aurora import AuroraWidget
-        central = AuroraWidget(animated=self._bg_animated)
+        central = QWidget()
+        central.setObjectName("workspace")
+        central.setStyleSheet(f"QWidget#workspace {{ background: {t.BG_PAGE}; }}")
         self.setCentralWidget(central)
 
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        brand = QWidget()
+        brand.setStyleSheet(f"background: {t.PRIMARY_DARK};")
+        brand.setFixedHeight(54)
+        brand_row = QHBoxLayout(brand)
+        brand_row.setContentsMargins(22, 0, 22, 0)
+        brand_row.addWidget(_label("SEVIMLI", 23, "#FFFFFF", bold=True))
+        brand_row.addSpacing(16)
+        brand_row.addWidget(_label(tr("Kassa"), 13, "#C5DFD0"))
+        brand_row.addStretch()
+        self.clock_label = _label("", 13, "#C5DFD0")
+        brand_row.addWidget(self.clock_label)
+        from PySide6.QtCore import QDateTime
+        def tick():
+            self.clock_label.setText(QDateTime.currentDateTime().toString("dd.MM.yyyy  •  HH:mm"))
+        self._clock = QTimer(self)
+        self._clock.timeout.connect(tick)
+        self._clock.start(10000)
+        tick()
+        root.addWidget(brand)
+
         body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
+        body.setContentsMargins(14, 14, 14, 14)
+        body.setSpacing(14)
         body.addWidget(self._catalog_panel(), 1)
         body.addWidget(self._receipt_panel())
 
@@ -422,7 +437,7 @@ class MainWindow(QMainWindow):
         head = QWidget()
         head.setFixedHeight(t.HEADER_HEIGHT)
         # To'q, biroz shaffof chrome — aurora yumshoq sezilib turadi.
-        head.setStyleSheet("background: rgba(9,17,19,0.72);")
+        head.setStyleSheet(f"background: {t.BG}; border-bottom: 1px solid {t.LINE};")
         head_row = QHBoxLayout(head)
         head_row.setContentsMargins(14, 0, 14, 0)
         head_row.setSpacing(10)
@@ -513,6 +528,7 @@ class MainWindow(QMainWindow):
     def _receipt_panel(self) -> QWidget:
         panel = QWidget()
         panel.setFixedWidth(t.RECEIPT_WIDTH)
+        panel.setStyleSheet(f"background: {t.BG}; border-radius: {t.RADIUS}px;")
         col = QVBoxLayout(panel)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
@@ -520,7 +536,7 @@ class MainWindow(QMainWindow):
         head = QWidget()
         head.setFixedHeight(t.HEADER_HEIGHT)
         # To'q, biroz shaffof chrome — aurora yumshoq sezilib turadi.
-        head.setStyleSheet("background: rgba(9,17,19,0.72);")
+        head.setStyleSheet(f"background: {t.BG}; border-bottom: 1px solid {t.LINE};")
         hrow = QHBoxLayout(head)
         hrow.setContentsMargins(20, 0, 20, 0)
 
@@ -533,11 +549,11 @@ class MainWindow(QMainWindow):
         self.price_btn.hide()
         hrow.addWidget(self.price_btn)
 
-        self.receipt_title = _label(tr("Chek"), 16, "#FFFFFF", bold=True)
+        self.receipt_title = _label(tr("Chek"), 18, t.INK, bold=True)
         self.receipt_title.setAlignment(Qt.AlignCenter)
         hrow.addWidget(self.receipt_title, 1)
         # Smena yozuvi — pastdagi panel olib tashlangach, shu yerda
-        self.shift_label = _label("", 12, "#BFE0C9")
+        self.shift_label = _label("", 11, t.MUTED)
         self.shift_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         hrow.addWidget(self.shift_label)
         col.addWidget(head)
@@ -581,20 +597,16 @@ class MainWindow(QMainWindow):
         Bezakli fon yo'q — minimalistik. Fon och yashil (design system
         BG_PAGE), o'rtada brend logotipi va qisqa yo'riqnoma.
         """
-        page = _LogoGlowPage()
+        page = QWidget()
         page.setStyleSheet("background: transparent;")
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(40, 40, 40, 40)
+        lay.setContentsMargins(24, 24, 24, 24)
         lay.addStretch(3)
 
         logo = QLabel()
-        logo.setStyleSheet("background: transparent;")
+        logo.setStyleSheet(f"background: {t.ACCENT_PALE}; border-radius: 30px; padding: 22px;")
+        logo.setPixmap(icons.pixmap("cart", 48, t.ACCENT))
         logo.setAlignment(Qt.AlignCenter)
-        path = Path(__file__).resolve().parent.parent / "sevimli-logo.png"
-        if path.exists():
-            pix = QPixmap(str(path))
-            logo.setPixmap(pix.scaledToWidth(300, Qt.SmoothTransformation))
-        page._logo = logo  # glow markazi logo ortida bo'lsin
         lay.addWidget(logo, 0, Qt.AlignCenter)
 
         lay.addSpacing(20)
@@ -605,6 +617,7 @@ class MainWindow(QMainWindow):
         sub = _label(tr("Tovarni tanlang yoki shtrix-kodni skanerlang"),
                      t.FS_SMALL, t.MUTED)
         sub.setAlignment(Qt.AlignCenter)
+        sub.setWordWrap(True)
         lay.addWidget(sub, 0, Qt.AlignCenter)
 
         lay.addStretch(4)
@@ -656,7 +669,7 @@ class MainWindow(QMainWindow):
         wrap = QWidget()
         wrap.setStyleSheet(f"background: {t.BG}; border-top: 1px solid {t.LINE};")
         box = QVBoxLayout(wrap)
-        box.setContentsMargins(0, 8, 0, 0)
+        box.setContentsMargins(12, 12, 12, 12)
         box.setSpacing(0)
 
         # Tafsilot qatorlari — faqat qiymat bo'lsa ko'rinadi
@@ -680,17 +693,13 @@ class MainWindow(QMainWindow):
         bar = QWidget()
         bar.setFixedHeight(t.TOTAL_BAR_HEIGHT)
         bar.setCursor(Qt.PointingHandCursor)
-        bar.setStyleSheet(
-            "background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
-            f" stop:0 {t.ACCENT_GLOW}, stop:0.18 {t.ACCENT},"
-            f" stop:1 {t.ACCENT_DARK});"
-            f" border-top: 1px solid {t.ACCENT_GLOW};")
+        bar.setStyleSheet(f"background: {t.ACCENT}; border-radius: 12px;")
         row = QHBoxLayout(bar)
         row.setContentsMargins(24, 0, 20, 0)
 
-        row.addWidget(_label(tr("JAMI"), 15, "#D6F5E4", bold=True))
+        row.addWidget(_label(tr("JAMI"), 13, "#D6F5E4", bold=True))
         row.addStretch(1)
-        self.total_label = _label("0", 34, "#FFFFFF", bold=True)
+        self.total_label = _label("0", 30, "#FFFFFF", bold=True)
         row.addWidget(self.total_label)
         row.addSpacing(10)
         chev = QLabel()
@@ -700,6 +709,16 @@ class MainWindow(QMainWindow):
         bar.mousePressEvent = lambda _e: self.open_payment()
 
         box.addWidget(bar)
+        pay = QPushButton(tr("TO'LOV") + "  ·  F9")
+        pay.setMinimumHeight(48)
+        pay.setCursor(Qt.PointingHandCursor)
+        pay.setStyleSheet(
+            f"QPushButton {{background: {t.ACCENT_PALE}; color: {t.ACCENT_DARK};"
+            f"border: none; border-radius: 10px; font-size: 16px; font-weight: 700;}}"
+            f"QPushButton:hover {{background: {t.SURFACE_2};}}")
+        pay.clicked.connect(self.open_payment)
+        box.addSpacing(8)
+        box.addWidget(pay)
         return wrap
 
     # ------------------------------------------------------------ tugmalar
@@ -920,15 +939,15 @@ class MainWindow(QMainWindow):
         btn.setCursor(Qt.PointingHandCursor)
         btn.setFocusPolicy(Qt.NoFocus)
         btn.setFixedSize(50, 50)
-        btn.setIcon(icons.icon(name, 22, "#FFFFFF"))
+        btn.setIcon(icons.icon(name, 22, t.INK_SOFT))
         btn.setIconSize(icons.button_icon_size(22))
         if tip:
             btn.setToolTip(tip)
         btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.14); border: none;"
+            "QPushButton { background: rgba(16,61,50,0.06); border: none;"
             " border-radius: 10px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.22); }"
-            "QPushButton:pressed { background: rgba(255,255,255,0.30); }"
+            "QPushButton:hover { background: rgba(16,61,50,0.10); }"
+            "QPushButton:pressed { background: rgba(16,61,50,0.16); }"
         )
         btn.clicked.connect(handler)
         return btn
@@ -1008,7 +1027,7 @@ class MainWindow(QMainWindow):
             self.price_btn.setStyleSheet(
                 "QPushButton { background: rgba(255,255,255,0.16); color: #FFFFFF;"
                 " border: none; border-radius: 8px; padding: 0 14px; }"
-                "QPushButton:pressed { background: rgba(255,255,255,0.30); }"
+                "QPushButton:pressed { background: rgba(16,61,50,0.16); }"
             )
         else:
             self.price_btn.setStyleSheet(

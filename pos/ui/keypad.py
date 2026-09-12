@@ -56,7 +56,7 @@ def touch_button(text: str, *, size: int = 20, bold: bool = True,
         f" border: 1.5px solid {border}; border-radius: 10px; }}"
         # Bosilganda rang o'zgarsin — kassir bosilganini ko'rsin,
         # chunki sensorli ekranda «bosildi» hissi yo'q
-        f"QPushButton:pressed {{ background: {t.ACCENT_PALE};"
+        f"QPushButton:pressed {{ background: {t.ACCENT_DARK if tone in ('accent', 'dark', 'danger') else t.ACCENT_PALE};"
         f" border-color: {t.ACCENT}; }}"
         f"QPushButton:disabled {{ background: {t.BG_SOFT}; color: {t.FAINT};"
         f" border-color: {t.LINE}; }}"

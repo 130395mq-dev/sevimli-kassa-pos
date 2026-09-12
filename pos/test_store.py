@@ -189,7 +189,7 @@ class OutboxTest(unittest.TestCase):
         self.assertEqual(self.store.pending_count(), 3)
 
         rows = self.store.pending()
-        self.assertEqual(rows[0]["attempts"], 1)
+        self.assertEqual(rows[0]["attempts"], 0)
         self.assertIn("ulanib bo'lmadi", rows[0]["last_error"])
 
     def test_yuborilgan_chek_qayta_yuborilmaydi(self):
@@ -197,7 +197,8 @@ class OutboxTest(unittest.TestCase):
         backend = LiveBackend(hub, self.store, METHODS)
         backend.submit(self.make_cart(), self._paid_plan())
 
-        self.assertEqual(len(hub.received), 1)
+        self.assertEqual(len(hub.received), 0)
+        self.assertEqual(backend.flush(), 1)
         self.assertEqual(backend.flush(), 0)
         self.assertEqual(len(hub.received), 1)
 
@@ -387,6 +388,7 @@ class PriceTypeTest(unittest.TestCase):
         plan = PaymentPlan(total=cart.total)
         plan.add_cash(cart.total)
         self.backend.submit(cart, plan)
+        self.backend.flush()
         self.assertEqual(self.backend.hub.received[0]["price_type"], "Улугржи нархи")
         self.assertEqual(self.backend.hub.received[0]["items"][0]["price"], 52_000_00)
 
