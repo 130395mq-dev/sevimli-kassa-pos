@@ -163,8 +163,13 @@ class LoginScreenResumeTest(unittest.TestCase):
         s.logout_requested.connect(lambda: got.append("logout"))
         s.open_resume("N")
         s.resume_btn.click()
+        # «Chiqish» endi tasdiq so'raydi — adashib bosilsa chiqmaydi.
+        s._ask_logout = lambda: False
         s.resume_logout.click()
-        self.assertEqual(got, ["resume", "logout"])
+        self.assertEqual(got, ["resume"])  # tasdiqsiz chiqmadi
+        s._ask_logout = lambda: True
+        s.resume_logout.click()
+        self.assertEqual(got, ["resume", "logout"])  # tasdiqdan keyin chiqdi
 
     def test_xato_xabari_kirish_ekranida(self):
         s = self.screen()
