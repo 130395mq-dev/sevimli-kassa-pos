@@ -298,10 +298,24 @@ def main() -> int:
     # haqiqiy raqam bilan mos keladi (bitta kassa = bitta smena).
     sale_no = {"n": 1}
 
+    def _history_tag(sh: dict) -> str:
+        """Smenaning barqaror belgisi — tarixда «shu smenadagi cheklar» uchun.
+        Onlayn smenada server id, oflaynda mahalliy uuid. Smena davomida
+        (oflayn→onlayn sinxronда ham) o'zgarmaydi, chunki faqat shu yerда,
+        smenaga kirilганда o'rnatiladi."""
+        if sh.get("id"):
+            return f"srv:{sh['id']}"
+        local = store.get_local_shift()
+        if local and local.get("local_uuid"):
+            return f"loc:{local['local_uuid']}"
+        return f"loc:{sh.get('opened_at', '')}"
+
     def _enter_kassa(sh: dict) -> None:
         session["shift"] = sh
         if sh.get("id"):
             store.set("active_shift_id", str(sh["id"]))
+        # Bundan keyingi cheklar shu smenaga tegishli deb belgilanadi.
+        store.set("history_shift_tag", _history_tag(sh))
         sale_no["n"] = int(sh.get("next_receipt_number") or 1)
         window.shift_label.setText(_shift_caption(sh))
         window.centralWidget().setEnabled(True)
@@ -801,23 +815,37 @@ def main() -> int:
         import json as _json
 
         from .money import som
-        from .ui.dialogs import PickDialog
+        from .ui.dialogs import HistoryDialog
+
+        sh = session.get("shift") or {}
+        tag = store.get("history_shift_tag") or ""
 
         rows = []
-        for r in store.recent_sales(40):
+        for r in store.shift_sales(tag, 1000):
             payload = _json.loads(r["payload"])
             total = sum(p["amount"] for p in payload.get("payments", []))
             _sent = r["sent"]
-            state = "bekor" if _sent == 2 else ("yuborildi" if _sent else "navbatda")
-            rows.append((
-                f"{r['created_at'][11:16]}   ·   {som(total)} so'm   ·   {state}",
-                r["local_uuid"],
-            ))
+            state = ("bekor" if _sent == 2
+                     else (tr("yuborildi") if _sent else tr("navbatda")))
+            keys = r.keys()
+            check_no = r["check_no"] if "check_no" in keys else None
+            is_return = payload.get("kind") == "return"
+            rows.append({
+                "check_no": check_no,
+                "time": r["created_at"][11:16],
+                "total": total,
+                "total_text": som(total),
+                "state": state,
+                "is_return": is_return,
+            })
 
-        PickDialog(
-            tr("Tarix"), rows, empty_text=tr("Hali chek yo'q"),
-            pick_text="YOPISH", parent=window,
-        ).exec()
+        # Smena sarlavhasi — «Smena #12» yoki oflayn.
+        if sh.get("id") is None or sh.get("number") in ("—", None, ""):
+            caption = tr("Smena (oflayn)")
+        else:
+            caption = tr("Smena #{n}").format(n=sh["number"])
+
+        HistoryDialog(rows, shift_caption=caption, parent=window).exec()
 
     def refresh_data() -> None:
         # Tarmoq ishi fon oqimida — kassa qotmaydi. Chiroyli oyna bosqichlarni
