@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -434,19 +435,44 @@ class LoginScreen(QWidget):
         col.addWidget(self.resume_btn)
         col.addSpacing(12)
 
-        self.resume_logout = QPushButton(tr("CHIQISH — boshqa kassir kiradi"))
-        self.resume_logout.setFixedHeight(52)
+        # Kichik, bo'rtib turmaydigan «Chiqish» — kassir uni kamdan-kam
+        # bosadi (kunda bir marta). Katta «SMENA OCHISH» yonida kichik
+        # bo'lsin, adashib bosilmasin; bosilsa ham tasdiq so'raladi.
+        self.resume_logout = QPushButton(tr("Chiqish"))
+        self.resume_logout.setFixedHeight(34)
+        self.resume_logout.setFixedWidth(150)
         self.resume_logout.setCursor(Qt.PointingHandCursor)
         self.resume_logout.setFocusPolicy(Qt.NoFocus)
         self.resume_logout.setStyleSheet(
-            f"QPushButton {{ background:{t.BG_SOFT}; color:{t.INK_SOFT};"
-            f" border:1.5px solid {t.LINE_STRONG}; border-radius:13px;"
-            f" font-size:15px; font-weight:600; }}"
-            f"QPushButton:pressed {{ background:{t.SURFACE_2}; }}"
+            f"QPushButton {{ background:transparent; color:{t.MUTED};"
+            f" border:none; font-size:13px; font-weight:600; }}"
+            f"QPushButton:pressed {{ color:{t.INK}; }}"
         )
-        self.resume_logout.clicked.connect(self.logout_requested.emit)
-        col.addWidget(self.resume_logout)
+        self.resume_logout.clicked.connect(self._confirm_logout)
+        col.addWidget(self.resume_logout, 0, Qt.AlignHCenter)
         return card
+
+    def _confirm_logout(self) -> None:
+        """«Chiqish» adashib bosilishi mumkin — tasdiq so'raymiz. «Ha»
+        bosilsagina chiqadi (login-parol qayta so'raladi)."""
+        if self._ask_logout():
+            self.logout_requested.emit()
+
+    def _ask_logout(self) -> bool:
+        """Tasdiq oynasi. Ha bo'lsa True. (Test uchun alohida — sinovda
+        almashtiriladi, modal oyna bloklamasin.)"""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle(tr("Chiqish"))
+        box.setText(tr("Rostdan chiqasizmi?"))
+        box.setInformativeText(
+            tr("Boshqa kassir kirishi uchun login va parol qayta so'raladi.")
+        )
+        yes = box.addButton(tr("Ha, chiqaman"), QMessageBox.YesRole)
+        box.addButton(tr("Yo'q"), QMessageBox.NoRole)
+        box.setDefaultButton(box.buttons()[-1])
+        box.exec()
+        return box.clickedButton() is yes
 
     # ------------------------------------------------------------- holat
 
