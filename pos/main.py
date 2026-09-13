@@ -807,7 +807,8 @@ def main() -> int:
         for r in store.recent_sales(40):
             payload = _json.loads(r["payload"])
             total = sum(p["amount"] for p in payload.get("payments", []))
-            state = "yuborildi" if r["sent"] else "navbatda"
+            _sent = r["sent"]
+            state = "bekor" if _sent == 2 else ("yuborildi" if _sent else "navbatda")
             rows.append((
                 f"{r['created_at'][11:16]}   ·   {som(total)} so'm   ·   {state}",
                 r["local_uuid"],
@@ -979,7 +980,15 @@ def main() -> int:
             return
 
         # 3. Qaysi tovar, nechta
-        items = ReturnItemsDialog(sale, window)
+        items = ReturnItemsDialog(sale, window, local_returned=backend.local_returned(sale["id"]))
+        # Bu chekda qaytarish uchun hech nima qolmagan bo'lsa (hammasi
+        # allaqachon qaytarilgan) — kassirга aniq aytamiz, bo'sh oyna emas.
+        if not items.rows:
+            QMessageBox.information(
+                None, tr("Qaytarish"),
+                tr("Bu chekdagi tovarlar allaqachon qaytarilgan — qayta qaytarib bo'lmaydi."),
+            )
+            return
         if items.exec() != ReturnItemsDialog.Accepted or not items.lines:
             return
 
