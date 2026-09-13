@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QStyle,
     QStyledItemDelegate,
@@ -62,6 +63,84 @@ def _label(text="", size=14, color=t.INK, bold=False) -> QLabel:
     lbl.setFont(font)
     lbl.setStyleSheet(f"color: {color}; background: transparent; border: none;")
     return lbl
+
+
+def _wrap_lines(text: str, fm: QFontMetrics, width: int, max_lines: int) -> list[str]:
+    """Matnni so'zlar bo'yicha `width` ga sig'adigan qatorlarga bo'ladi
+    (ko'pi bilan `max_lines`); sig'may qolgani oxirgi qatorда «…»."""
+    words = text.split()
+    lines: list[str] = []
+    cur = ""
+    i = 0
+    while i < len(words):
+        trial = (cur + " " + words[i]).strip()
+        if fm.horizontalAdvance(trial) <= width or not cur:
+            cur = trial
+            i += 1
+        else:
+            lines.append(cur)
+            cur = ""
+            if len(lines) == max_lines - 1:
+                break
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+    if i < len(words):
+        # Sig'may qolgan so'zlar — oxirgi (max_lines-inchi) qatorда «…» bilan
+        lines.append(fm.elidedText(" ".join(words[i:]), Qt.ElideRight, width))
+    return [
+        ln if fm.horizontalAdvance(ln) <= width else fm.elidedText(ln, Qt.ElideRight, width)
+        for ln in (lines or [""])
+    ]
+
+
+class _WrapLabel(QLabel):
+    """Chek qatoridagi nom: 2 qatorgacha o'raladi, sig'masa «…».
+
+    Oddiy QLabel uzun nomda qatorni o'z kengligiga cho'zib yuborar edi —
+    o'ngdagi summa ekrandan chiqib ketardi (skrollbar yo'q). Bu label'ning
+    minimal kengligi 0: u bor joyga sig'adi, summa doim o'ngda ko'rinadi.
+    """
+
+    def __init__(self, text: str, size: int, color: str, bold: bool = False,
+                 max_lines: int = 2, parent=None):
+        super().__init__(parent)
+        self._text = text
+        self._max_lines = max_lines
+        font = QFont()
+        font.setPixelSize(size)
+        font.setBold(bold)
+        self.setFont(font)
+        self._color = QColor(color)
+        self.setStyleSheet("background: transparent; border: none;")
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+
+    def lines_for(self, width: int) -> list[str]:
+        return _wrap_lines(self._text, QFontMetrics(self.font()), max(width, 20), self._max_lines)
+
+    def set_height_for(self, width: int) -> int:
+        """Berilgan kenglikda nechta qator bo'lishini hisoblab, balandlikni
+        qat'iy qo'yadi (QListWidget qator balandligi oldindan kerak)."""
+        n = len(self.lines_for(width))
+        h = QFontMetrics(self.font()).height() * n
+        self.setFixedHeight(h)
+        return h
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, self.height())
+
+    def sizeHint(self) -> QSize:
+        return QSize(0, self.height())
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.setFont(self.font())
+        painter.setPen(self._color)
+        fm = QFontMetrics(self.font())
+        y = fm.ascent()
+        for ln in self.lines_for(self.width()):
+            painter.drawText(0, y, ln)
+            y += fm.height()
 
 
 # Nozik skrollbar — o'q tugmalari, burchak qutichasi va gorizontal bar
@@ -1054,26 +1133,40 @@ class MainWindow(QMainWindow):
         """
         w = QWidget()
         w.setStyleSheet("QWidget { background: transparent; border: none; }")
-        w.setMinimumHeight(58)
         row = QHBoxLayout(w)
         # Bo'shliq qator vidjetining ichida — QListWidget'ning padding'i
         # setItemWidget bilan qo'yilgan vidjetga ta'sir qilmaydi
         row.setContentsMargins(18, 9, 22, 9)
         row.setSpacing(12)
 
+        # Summa ustuni — qat'iy kenglik, doim o'ngda ko'rinadi
+        value = _label(amount, amount_size, t.INK, bold=True)
+        value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        vfm = QFontMetrics(value.font())
+        value_w = max(120, vfm.horizontalAdvance(amount) + 6)
+        value.setFixedWidth(value_w)
+
+        # Nomga qolgan joy: panel kengligi − chetlar − summa − skrollbar.
+        # Nom shu joyga sig'adi (2 qatorgacha, keyin «…») — hech qachon
+        # qatorni kengaytirib summani ekrandan chiqarib yubormaydi.
+        name_w = t.RECEIPT_WIDTH - 18 - 22 - 12 - value_w - 10
         left = QVBoxLayout()
         left.setSpacing(2)
-        left.addWidget(_label(title, 16, t.INK, bold=True))
+        name = _WrapLabel(title, 16, t.INK, bold=True, max_lines=2)
+        name_h = name.set_height_for(name_w)
+        left.addWidget(name)
+        sub_h = 0
         if subtitle:
             # Qoldiq nol bo'lsa — rangi o'zgaradi. Sotib bo'lmaydi degani
             # emas, lekin kassir buni ko'rib turishi kerak.
-            left.addWidget(_label(subtitle, 12.5, t.DANGER if low_stock else t.MUTED))
+            sub = _WrapLabel(subtitle, 12, t.DANGER if low_stock else t.MUTED, max_lines=1)
+            sub_h = sub.set_height_for(name_w) + 2
+            left.addWidget(sub)
         row.addLayout(left, 1)
-
-        value = _label(amount, amount_size, t.INK, bold=True)
-        value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        value.setMinimumWidth(120)
         row.addWidget(value)
+
+        # Qator balandligi: matnga qarab, lekin barmoq uchun 58 dan kam emas
+        w.setMinimumHeight(max(58, 9 + name_h + sub_h + 9))
         return w
 
     def _add_row(self, listw: QListWidget, widget: QWidget, data=None) -> None:
