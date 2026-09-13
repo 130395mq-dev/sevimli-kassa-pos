@@ -162,5 +162,45 @@ class LinkLightsTest(unittest.TestCase):
         self.assertTrue(w._dots["server"].lit)
 
 
+class ReceiptRowTest(unittest.TestCase):
+    """Chek qatori: uzun nom summani o'ngga surib ekrandan chiqarmasin."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_wrap_lines(self):
+        from PySide6.QtGui import QFont, QFontMetrics
+
+        from .ui.main_window import _wrap_lines
+
+        font = QFont()
+        font.setPixelSize(16)
+        fm = QFontMetrics(font)
+        long = "Televizor Samsung 65 dyuym 4K Smart TV QLED yangi model 2026 yil"
+        lines = _wrap_lines(long, fm, 280, 2)
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[-1].endswith("…"))
+        for ln in lines:
+            self.assertLessEqual(fm.horizontalAdvance(ln), 280)
+        self.assertEqual(_wrap_lines("Non", fm, 280, 2), ["Non"])
+        self.assertEqual(_wrap_lines("", fm, 280, 2), [""])
+
+    def test_qator_kengligi_panelga_sigadi(self):
+        from .ui import theme as t
+        from .ui.main_window import MainWindow
+
+        long = "Coca-Cola gazlangan ichimlik 1.5 litr plastik butilka original klassik ta'm"
+        w = MainWindow._row_widget(long, "1 × 12 500", "15 990 000")
+        # Minimal kenglik panel kengligidan oshmasin — aks holda summa
+        # o'ng chetga kirib ketadi (gorizontal skroll yo'q)
+        self.assertLessEqual(w.minimumSizeHint().width(), t.RECEIPT_WIDTH)
+        self.assertGreaterEqual(w.minimumHeight(), 58)
+        short = MainWindow._row_widget("Non", "2 × 3 000", "6 000")
+        self.assertEqual(short.minimumHeight(), 58)
+        self.assertGreater(w.minimumHeight(), short.minimumHeight())  # 2 qator
+
 if __name__ == "__main__":
     unittest.main()
