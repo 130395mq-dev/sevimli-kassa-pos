@@ -699,7 +699,7 @@ class LiveBackend:
                 self.store.discard(row["local_uuid"], "Bo'sh (0 summali) chek — yuborilmadi")
                 continue
             try:
-                self.hub.send_sale(payload)
+                resp = self.hub.send_sale(payload)
             except (HubConnError, HubAuthError) as e:
                 # Ulanish yoki token xatosi — sabab UMUMIY (internet yo'q
                 # yoki kassa uzilgan). Qolganini urinishning ma'nosi yo'q,
@@ -728,7 +728,10 @@ class LiveBackend:
                     self.store.mark_failed(row["local_uuid"], str(e))
                 continue
             else:
-                self.store.mark_sent(row["local_uuid"])
+                # Server chek raqamini qaytaradi (Sale.pk = MoySklad «SK-<raqam>»).
+                # Uni saqlaymiz — tarixда ko'rinadi va u bo'yicha qidiriladi.
+                check_no = resp.get("id") if isinstance(resp, dict) else None
+                self.store.mark_sent(row["local_uuid"], check_no)
                 sent += 1
         return sent
 
