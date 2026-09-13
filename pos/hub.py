@@ -326,6 +326,22 @@ def sale_payload(cart: Cart, plan: PaymentPlan, local_uuid: str,
     }
 
 
+def is_junk_receipt(payload: dict) -> bool:
+    """Bo'sh yoki 0 summali chek — haqiqiy savdo/qaytarish EMAS.
+
+    Qaytarishdan keyin ba'zan 0 summali artefakt chek navbatда qolib,
+    server uni rad etardi va kassa uni cheksiz qayta yuborishga urinardi
+    («navbatда 1 chek» xabari ketmasди). Bunday chek: tovari yo'q, yoki
+    pul ham, ball ham 0. Uni yubormaymiz — navbatni to'smasin.
+    """
+    if not payload.get("items"):
+        return True
+    pay_total = sum(int(p.get("amount") or 0) for p in (payload.get("payments") or []))
+    points = int(payload.get("points_spent") or 0)
+    net = int(payload.get("net_total") or 0)
+    return net <= 0 and pay_total <= 0 and points <= 0
+
+
 def return_payload(origin: dict, lines: list[dict], refund_method: str,
                    local_uuid: str, created_at: str) -> dict:
     """Qaytarish chekini serverga yuboriladigan ko'rinishga o'tkazadi.
@@ -552,6 +568,10 @@ class LiveBackend:
         local_uuid = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
         payload = return_payload(origin, lines, refund_method, local_uuid, created_at)
+        # 0 summali qaytarish — haqiqiy amal emas (hech nima qaytarilmaydi).
+        # Saqlamaymiz: aks holda navbatда bo'sh chek qolib ketardi.
+        if is_junk_receipt(payload):
+            raise HubError("Qaytarish summasi 0 — hech nima qaytarilmadi")
         self._bind_shift(payload)
 
         self.store.queue(local_uuid, payload, created_at)
@@ -649,8 +669,15 @@ class LiveBackend:
         self.sync_shift()
         sent = 0
         for row in self.store.pending(limit):
+            payload = json.loads(row["payload"])
+            # Bo'sh (0 summali) chek — serverга umuman yubormaymiz. Aks holda
+            # server uni rad etib turadi, kassa cheksiz qayta urinadi va
+            # «navbatда 1 chek» xabari hech ketmaydi. Chetга chiqaramiz.
+            if is_junk_receipt(payload):
+                self.store.discard(row["local_uuid"], "Bo'sh (0 summali) chek — yuborilmadi")
+                continue
             try:
-                self.hub.send_sale(json.loads(row["payload"]))
+                self.hub.send_sale(payload)
             except (HubConnError, HubAuthError) as e:
                 # Ulanish yoki token xatosi — sabab UMUMIY (internet yo'q
                 # yoki kassa uzilgan). Qolganini urinishning ma'nosi yo'q,
@@ -658,11 +685,13 @@ class LiveBackend:
                 self.store.note_outage(row["local_uuid"], str(e))
                 break
             except HubError as e:
-                # Server AYNAN shu chekni rad etdi (masalan validatsiya
-                # xatosi). Bu bitta chekning muammosi — orqasidagilarni
-                # bloklamasin. Belgilaymiz va KEYINGISIGA o'tamiz.
-                # (Ko'p marta rad etilsa `pending` uni o'zi chetlab o'tadi.)
-                self.store.mark_failed(row["local_uuid"], str(e))
+                # Server AYNAN shu chekni rad etdi. Bo'sh chek bo'lsa — qayta
+                # urinishning ma'nosi yo'q, chetга chiqaramiz. Boshqa xatolar
+                # (narx eskirgan h.k.) — belgilaymiz, keyin qayta uriniladi.
+                if is_junk_receipt(payload):
+                    self.store.discard(row["local_uuid"], str(e))
+                else:
+                    self.store.mark_failed(row["local_uuid"], str(e))
                 continue
             else:
                 self.store.mark_sent(row["local_uuid"])
