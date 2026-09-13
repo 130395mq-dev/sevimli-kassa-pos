@@ -120,6 +120,34 @@ class JunkReceiptTest(unittest.TestCase):
         self.assertEqual(self.store.unsent_count(), 0)
         self.assertEqual(self.store.stuck_count(), 0)
 
+    def test_qaytarish_400_bilan_rad_etilsa_chetga_chiqadi(self):
+        """«Asl chekdan oshib ketdi» (400) — allaqachon qaytarilgan. Qayta
+        urinish yordam bermaydi; chetga chiqadi, navbat tozalanadi."""
+        class Hub:
+            def send_sale(self, payload):
+                raise HubError("Qaytarish asl chekdan oshib ketdi", status=400)
+
+        ret = _real_receipt("ret-1")
+        ret["kind"] = "return"
+        self.store.queue("ret-1", ret, "2026-09-13")
+        backend = LiveBackend(Hub(), self.store, [])
+        backend.flush()
+        self.assertEqual(self.store.unsent_count(), 0)
+        self.assertEqual(self.store.stuck_count(), 0)
+
+    def test_qaytarish_409_smena_yoq_bolsa_qayta_uriniladi(self):
+        """Qaytarish 409 (smena hali ochilmagan) — keyin tuzaladi, YO'QOLMAYDI."""
+        class Hub:
+            def send_sale(self, payload):
+                raise HubError("Ochiq smena yo'q", status=409)
+
+        ret = _real_receipt("ret-2")
+        ret["kind"] = "return"
+        self.store.queue("ret-2", ret, "2026-09-13")
+        backend = LiveBackend(Hub(), self.store, [])
+        backend.flush()
+        self.assertEqual(self.store.unsent_count(), 1)
+
     def test_haqiqiy_chek_rad_etilsa_qayta_uriniladi(self):
         class Hub:
             def send_sale(self, payload):
@@ -130,6 +158,24 @@ class JunkReceiptTest(unittest.TestCase):
         backend.flush()
         # Haqiqiy chek YO'QOLMAYDI — navbatда qoladi, keyin qayta uriniladi
         self.assertEqual(self.store.unsent_count(), 1)
+
+    def test_navbatdagi_qaytarish_qaytadan_qaytarilmaydi(self):
+        """Navbatда turgan qaytarish (serverга hali yetmagan) keyingi
+        qaytarishда ayiriladi — bir tovar ikki marta qaytmasin."""
+        backend = LiveBackend(type("H", (), {})(), self.store, [])
+        # 3 dona sotilgan chekdan 3 tasi navbatда qaytarilgan
+        ret = {
+            "local_uuid": "r-1", "kind": "return", "origin_id": 42,
+            "net_total": 15000,
+            "items": [{"ms_product_id": "ms-1", "name": "Non",
+                       "quantity": "3", "price": 5000, "total": 15000}],
+            "payments": [{"method": "naqd", "amount": 15000}],
+        }
+        self.store.queue("r-1", ret, "2026-09-13")
+        agg = backend.local_returned(42)
+        self.assertEqual(agg.get("ms-1"), 3.0)
+        # Boshqa chek uchun — bo'sh
+        self.assertEqual(backend.local_returned(99), {})
 
     def test_0_summali_qaytarish_saqlanmaydi(self):
         class Hub:
