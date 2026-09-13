@@ -56,7 +56,14 @@ CREATE TABLE IF NOT EXISTS outbox (
     created_at TEXT NOT NULL,
     attempts   INTEGER NOT NULL DEFAULT 0,
     last_error TEXT NOT NULL DEFAULT '',
-    sent       INTEGER NOT NULL DEFAULT 0
+    sent       INTEGER NOT NULL DEFAULT 0,
+    -- Server bergan chek raqami (Sale.pk). MoySklad'da «SK-<raqam>» nomi
+    -- ham shu. Yuborilгач to'ldiriladi; navbatда turganда NULL.
+    check_no   INTEGER,
+    -- Qaysi smenaга tegishli — tarixда «shu smenadagi cheklar» uchun.
+    -- Smenaга kirilganda o'rnatiladi; oflayn/onlayn o'zgarishidan qat'i
+    -- nazar smena davomida o'zgarmaydi.
+    shift_tag  TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS outbox_pending ON outbox(sent, created_at);
 
@@ -110,6 +117,13 @@ class Store:
         if not self.get("outbox_retry_v2"):
             self.db.execute("UPDATE outbox SET attempts=0 WHERE sent=0")
             self.set("outbox_retry_v2", "1")
+
+        # Chek raqami va smena belgisi — eski bazaga qo'shamiz.
+        ob_cols = {r[1] for r in self.db.execute("PRAGMA table_info(outbox)")}
+        if "check_no" not in ob_cols:
+            self.db.execute("ALTER TABLE outbox ADD COLUMN check_no INTEGER")
+        if "shift_tag" not in ob_cols:
+            self.db.execute("ALTER TABLE outbox ADD COLUMN shift_tag TEXT NOT NULL DEFAULT ''")
 
     def set_price_type(self, price_type_id: str | None) -> None:
         """Kassa qaysi narx turida sotadi — saqlanadi, qayta ochilganda ham
@@ -292,10 +306,14 @@ class Store:
 
     def queue(self, local_uuid: str, payload: dict, created_at: str) -> None:
         """Chekni navbatga qo'yadi. Bu yozuv diskka tushgach chek xavfsiz."""
+        # Joriy smena belgisi — tarixда «shu smenadagi cheklar» uchun. Smenaга
+        # kirilганда o'rnatiladi (main._enter_kassa). Bo'lmasa bo'sh — hamma
+        # tarixда ko'rinadi (eski xatti-harakat).
+        shift_tag = self.get("history_shift_tag") or ""
         self.db.execute(
-            "INSERT OR IGNORE INTO outbox (local_uuid, payload, created_at)"
-            " VALUES (?, ?, ?)",
-            (local_uuid, json.dumps(payload, ensure_ascii=False), created_at),
+            "INSERT OR IGNORE INTO outbox (local_uuid, payload, created_at, shift_tag)"
+            " VALUES (?, ?, ?, ?)",
+            (local_uuid, json.dumps(payload, ensure_ascii=False), created_at, shift_tag),
         )
 
     #: Chek shuncha marta rad etilsa — «tiqilib qolgan» deb chetga chiqadi.
@@ -325,11 +343,21 @@ class Store:
             (self.MAX_ATTEMPTS,),
         ).fetchone()[0]
 
-    def mark_sent(self, local_uuid: str) -> None:
-        self.db.execute(
-            "UPDATE outbox SET sent = 1, last_error = '' WHERE local_uuid = ?",
-            (local_uuid,),
-        )
+    def mark_sent(self, local_uuid: str, check_no: int | None = None) -> None:
+        """Chek yuborildi. `check_no` — server bergan raqam (Sale.pk),
+        MoySklad «SK-<raqam>» nomi ham shu; tarixда ko'rsatiladi va u bo'yicha
+        qidiriladi. Raqam kelmasa (eski server), avvalgi qiymat saqlanadi."""
+        if check_no is not None:
+            self.db.execute(
+                "UPDATE outbox SET sent = 1, last_error = '', check_no = ?"
+                " WHERE local_uuid = ?",
+                (int(check_no), local_uuid),
+            )
+        else:
+            self.db.execute(
+                "UPDATE outbox SET sent = 1, last_error = '' WHERE local_uuid = ?",
+                (local_uuid,),
+            )
 
     def outbox_returns(self) -> list[dict]:
         """Navbatда turgan (hali serverга yetmagan) qaytarish payload'lari.
@@ -541,4 +569,16 @@ class Store:
         """Oxirgi cheklar — tarix uchun."""
         return self.db.execute(
             "SELECT * FROM outbox ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+
+    def shift_sales(self, shift_tag: str, limit: int = 1000) -> list[sqlite3.Row]:
+        """Faqat shu smenadagi cheklar (eng yangisi birinchi).
+
+        `shift_tag` bo'sh bo'lsa (eski cheklar yoki smena belgilanmagan) —
+        hamma tarixni beramiz, aks holda kassir hech narsa ko'rmay qolardi."""
+        if not shift_tag:
+            return self.recent_sales(limit)
+        return self.db.execute(
+            "SELECT * FROM outbox WHERE shift_tag = ? ORDER BY created_at DESC LIMIT ?",
+            (shift_tag, limit),
         ).fetchall()
