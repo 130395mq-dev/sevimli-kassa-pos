@@ -331,6 +331,14 @@ class Store:
             (local_uuid,),
         )
 
+    def discard(self, local_uuid: str, error: str = "") -> None:
+        """Bo'sh/yaroqsiz chekni navbatдан chiqaradi (yuborilmaydi, qayta
+        urinilmaydi, sanoqqa kirmaydi). sent=2 — tarixda «bekor» ko'rinadi."""
+        self.db.execute(
+            "UPDATE outbox SET sent = 2, last_error = ? WHERE local_uuid = ?",
+            (error[:500], local_uuid),
+        )
+
     def note_outage(self, local_uuid: str, error: str) -> None:
         """Temporary failures never consume the validation retry budget."""
         self.db.execute("UPDATE outbox SET last_error=? WHERE local_uuid=?",
