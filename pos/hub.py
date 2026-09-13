@@ -54,7 +54,16 @@ def settings_fingerprint(info: dict) -> str:
 
 
 class HubError(Exception):
-    """Server bilan gaplashib bo'lmadi yoki so'rovni rad etdi."""
+    """Server bilan gaplashib bo'lmadi yoki so'rovni rad etdi.
+
+    `status` — server javobining HTTP kodi (bo'lsa). 400 = so'rov aynan
+    rad etildi (masalan qaytarish asl chekdan oshdi) — qayta urinish
+    yordam bermaydi; 409 = holat (smena yo'q) — keyin tuzalishi mumkin.
+    """
+
+    def __init__(self, message: str = "", status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class HubAuthError(HubError):
@@ -119,13 +128,13 @@ class Hub:
             except Exception:
                 pass
             if e.code == 401 and "connect" not in path:
-                raise HubAuthError(detail or "Kassa tokeni noto'g'ri") from e
+                raise HubAuthError(detail or "Kassa tokeni noto'g'ri", status=e.code) from e
             if e.code == 409 and ("login" in path or "session/resume" in path):
                 # Bu login boshqa kompyuterda ishlayapti — xabar serverdan
-                raise HubBusyError(detail or "Bu login boshqa kassada ishlayapti") from e
+                raise HubBusyError(detail or "Bu login boshqa kassada ishlayapti", status=e.code) from e
             if e.code >= 500 or e.code in (408, 429):
-                raise HubConnError(detail or f"Server vaqtincha band: {e.code}") from e
-            raise HubError(detail or f"Server xatosi {e.code}") from e
+                raise HubConnError(detail or f"Server vaqtincha band: {e.code}", status=e.code) from e
+            raise HubError(detail or f"Server xatosi {e.code}", status=e.code) from e
         except urllib.error.URLError as e:
             raise HubConnError(f"Serverga ulanib bo'lmadi: {e.reason}") from e
         except TimeoutError as e:
@@ -577,6 +586,19 @@ class LiveBackend:
         self.store.queue(local_uuid, payload, created_at)
         return payload["net_total"]
 
+    def local_returned(self, origin_id) -> dict:
+        """Shu chek uchun navbatда turgan (hali serverга yetmagan)
+        qaytarishlar — tovar bo'yicha jami miqdor. Server buni hali
+        bilmaydi; qaytadan qaytarib yuborilmasin uchun ayiramiz."""
+        agg: dict = {}
+        for pl in self.store.outbox_returns():
+            if pl.get("origin_id") != origin_id:
+                continue
+            for it in pl.get("items", []):
+                key = it.get("ms_product_id") or it.get("name")
+                agg[key] = agg.get(key, 0) + float(it.get("quantity") or 0)
+        return agg
+
     def returnable_sales(self) -> list[dict]:
         return self.hub.returnable_sales()
 
@@ -685,10 +707,22 @@ class LiveBackend:
                 self.store.note_outage(row["local_uuid"], str(e))
                 break
             except HubError as e:
-                # Server AYNAN shu chekni rad etdi. Bo'sh chek bo'lsa — qayta
-                # urinishning ma'nosi yo'q, chetга chiqaramiz. Boshqa xatolar
-                # (narx eskirgan h.k.) — belgilaymiz, keyin qayta uriniladi.
+                # Server AYNAN shu chekni rad etdi. Qayta urinish yordam
+                # bermaydigan hollarni chetга chiqaramiz (navbatni to'smasin):
+                #   • bo'sh (0 summali) chek;
+                #   • qaytarish 400 bilan rad etildi — masalan «asl chekdan
+                #     oshib ketdi» (allaqachon qaytarilgan): pul kassada
+                #     allaqachon berilgan, server esa yozmaydi, qancha qayta
+                #     urinsak ham baribir rad etadi.
+                # Boshqa xatolar (narx eskirgan, smena hali ochilmagan h.k.)
+                # — belgilaymiz, keyin qayta uriniladi.
                 if is_junk_receipt(payload):
+                    self.store.discard(row["local_uuid"], str(e))
+                elif payload.get("kind") == "return" and getattr(e, "status", None) == 400:
+                    logger.warning(
+                        "Qaytarish rad etildi, chetга chiqarildi (%s): %s",
+                        row["local_uuid"], e,
+                    )
                     self.store.discard(row["local_uuid"], str(e))
                 else:
                     self.store.mark_failed(row["local_uuid"], str(e))
