@@ -18,6 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -437,10 +438,20 @@ class LiveBackend:
             if not product:
                 return None
             if scan.weight is not None:
-                # Tarozi yorlig'i faqat VAZNLI tovar uchun ma'noli. PLU
-                # donali tovarga to'g'ri kelsa — bu tasodif, sotmaymiz.
+                # Tarozi yorlig'i (29 + PLU + vazn) faqat tarozidan chiqadi,
+                # demak PLU'si mos kelgan tovar — vaznli. Katalogda «vaznli»
+                # belgisi bo'lmasa ham sotamiz: Sevimli MoySklad'ida hamma
+                # tovar birligi «шт», server hech birini vaznli deb
+                # belgilamaydi (2026-09: 1194 ta kilo tovar, is_weight=0
+                # → «Tovar topilmadi»). Tovar tarozi PLU'si bilan
+                # topiladi — kodi raqamli (00843) yoki plu to'ldirilgan.
+                # Chek qatorida «kg» ko'rinishi va tortishlar birlashmasligi
+                # uchun tovar nusxasi vaznli qilib qaytariladi.
                 if not product.is_weight:
-                    return None
+                    if product.plu is None and not (product.code or "").strip().isdigit():
+                        # Kodi raqam emas — tarozi tovari emas, tasodif
+                        return None
+                    product = replace(product, is_weight=True)
                 return product, scan.weight
             if product.price > 0:
                 # Narxli yorliq: miqdorni narxdan chiqaramiz
