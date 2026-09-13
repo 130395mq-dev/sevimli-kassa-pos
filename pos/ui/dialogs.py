@@ -1020,6 +1020,100 @@ class PickDialog(BaseDialog):
             self.accept()
 
 
+class HistoryDialog(BaseDialog):
+    """Tarix — shu smenadagi cheklar. Chek raqami bo'yicha qidiriladi.
+
+    Har qatorда: chek raqami (SK-…), vaqti, summasi va holati (yuborildi/
+    navbatда/bekor). Yuqorida raqamli klaviatura — kassir chek raqamini
+    tersa, ro'yxat shu zahoti filtrlanadi.
+    """
+
+    def __init__(self, rows: list[dict], shift_caption: str = "", parent=None):
+        super().__init__(tr("Tarix"), width=620, parent=parent)
+        self._rows = rows
+        self._query = ""
+
+        if shift_caption:
+            cap = _label(shift_caption, 14, t.MUTED)
+            cap.setAlignment(Qt.AlignCenter)
+            self.root.addWidget(cap)
+
+        hint = _label(tr("Chek raqami bo'yicha qidirish"), 13, t.FAINT)
+        hint.setAlignment(Qt.AlignCenter)
+        self.root.addWidget(hint)
+
+        self.search = _display("")
+        self.root.addWidget(self.search)
+
+        self.list = QListWidget()
+        self.list.setMinimumHeight(300)
+        self.list.setStyleSheet(
+            f"QListWidget {{ border: 1px solid {t.LINE}; border-radius: 10px;"
+            f" background: {t.BG}; font-size: 15px; }}"
+            f"QListWidget::item {{ padding: 14px 16px;"
+            f" border-bottom: 1px solid {t.LINE}; color: {t.INK}; }}"
+        )
+        self.root.addWidget(self.list)
+
+        self.empty = _label("", 14, t.MUTED)
+        self.empty.setAlignment(Qt.AlignCenter)
+        self.root.addWidget(self.empty)
+
+        pad = Keypad(with_zeros=False)
+        pad.digit.connect(self._type)
+        pad.backspace.connect(self._back)
+        pad.clear.connect(self._clear)
+        self.root.addWidget(pad)
+
+        close = touch_button(tr("Yopish"), size=18, height=64, tone="soft")
+        close.clicked.connect(self.accept)
+        self.root.addWidget(close)
+
+        self._refresh()
+
+    def _type(self, d: str) -> None:
+        self._query += d
+        self._refresh()
+
+    def _back(self) -> None:
+        self._query = self._query[:-1]
+        self._refresh()
+
+    def _clear(self) -> None:
+        self._query = ""
+        self._refresh()
+
+    def _refresh(self) -> None:
+        # Qidiruv maydoni: terilgan raqam yoki bo'sh belgi
+        self.search.setText(self._query or "—")
+        self.list.clear()
+        q = self._query
+        shown = 0
+        for r in self._rows:
+            no = r.get("check_no")
+            # Raqam terilgan bo'lsa — faqat mos chek raqamlari
+            if q and not (no is not None and q in str(no)):
+                continue
+            no_txt = f"SK-{no}" if no is not None else "—"
+            pref = "↩ " if r.get("is_return") else ""
+            text = (
+                f"{pref}№ {no_txt}    ·    {r.get('time', '')}"
+                f"    ·    {r.get('total_text', '')} so'm    ·    {r.get('state', '')}"
+            )
+            item = QListWidgetItem(text)
+            if r.get("is_return"):
+                item.setForeground(_color(t.DANGER))
+            self.list.addItem(item)
+            shown += 1
+
+        if shown == 0:
+            self.empty.setText(
+                tr("Bu raqamli chek topilmadi") if q else tr("Hali chek yo'q")
+            )
+        else:
+            self.empty.setText("")
+
+
 class LoginDialog(BaseDialog):
     """Kassaga kirish: kim va PIN.
 
