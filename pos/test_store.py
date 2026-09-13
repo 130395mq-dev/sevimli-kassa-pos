@@ -517,8 +517,9 @@ class BarcodeLookupTest(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.dir.name) / "kassa.db")
         self.store.replace_products([
-            # Donali tovar, kodi 32 — MoySklad yaratgan shtrix-kod bilan
-            {"id": 10, "ms_id": "ms-10", "name": "Shampun", "code": "32",
+            # Donali tovar, kodi S32 (Sevimli'da donali kodlar «S…») —
+            # MoySklad yaratgan shtrix-kod bilan
+            {"id": 10, "ms_id": "ms-10", "name": "Shampun", "code": "S32",
              "barcode": self.MS_CODE, "price": 25_000_00, "is_weight": False,
              "plu": None, "tracked": False, "stock": 5},
             # Vaznli tovar, PLU 123
@@ -546,7 +547,7 @@ class BarcodeLookupTest(unittest.TestCase):
         bo'lardi. Endi: vazn 50 kg dan katta → tarozi kodi emas → topilmadi."""
         self.store.replace_products([{"id": 10, "archived": True}])
         self.store.replace_products([
-            {"id": 13, "ms_id": "ms-13", "name": "Shampun", "code": "32",
+            {"id": 13, "ms_id": "ms-13", "name": "Shampun", "code": "S32",
              "barcode": "", "price": 25_000_00, "is_weight": False,
              "plu": None, "tracked": False, "stock": 5},
         ])
@@ -560,8 +561,33 @@ class BarcodeLookupTest(unittest.TestCase):
         self.assertEqual(product.name, "Go'sht")
         self.assertEqual(qty, Decimal("0.734"))
 
-    def test_tarozi_yorligi_donali_tovarga_tushsa_sotilmaydi(self):
-        """PLU 32 donali tovar kodiga to'g'ri keladi — tarozi yorlig'i unga ma'nosiz."""
+    def test_tarozi_yorligi_kodi_raqamli_tovar_vaznli_belgisiz_ham_sotiladi(self):
+        """Haqiqiy holat (2026-09): MoySklad'da kilo tovar kodi «00843»,
+        birligi «шт» → server is_weight=0, plu=None. Tarozi yorlig'i
+        29 00843 01250 → «гуруч ЛАЗЕР» 1.250 kg sotilishi kerak, va qator
+        vaznli bo'lsin (kg ko'rinadi, tortishlar birlashmaydi)."""
+        from .barcode import ean13_check_digit
+        self.store.replace_products([
+            {"id": 14, "ms_id": "ms-14", "name": "гуруч ЛАЗЕР ОЛИЙ НАВЛИ кг",
+             "code": "00843", "barcode": "2000002171928", "price": 21_990_00,
+             "is_weight": False, "plu": None, "tracked": False, "stock": 120},
+        ])
+        code = "290084301250"
+        code += str(ean13_check_digit(code))
+        product, qty = self.backend.find_by_barcode(code)
+        self.assertEqual(product.name, "гуруч ЛАЗЕР ОЛИЙ НАВЛИ кг")
+        self.assertEqual(qty, Decimal("1.250"))
+        self.assertTrue(product.is_weight)
+        # Katalogdagi asl yozuv o'zgarmaydi
+        self.assertFalse(self.store.by_plu(843).is_weight)
+        # MoySklad yaratgan o'z shtrix-kodi esa 1 dona
+        product, qty = self.backend.find_by_barcode("2000002171928")
+        self.assertEqual(product.name, "гуруч ЛАЗЕР ОЛИЙ НАВЛИ кг")
+        self.assertEqual(qty, Decimal(1))
+
+    def test_tarozi_yorligi_kodi_raqamsiz_tovarga_tushsa_sotilmaydi(self):
+        """PLU 32 — «Shampun» kodi «S32» (raqam emas), vaznli belgisi yo'q.
+        Tarozi yorlig'i unga ma'nosiz, «topilmadi»."""
         from .barcode import ean13_check_digit
         code = "290003200734"
         code += str(ean13_check_digit(code))
