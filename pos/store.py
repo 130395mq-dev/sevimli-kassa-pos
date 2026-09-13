@@ -331,6 +331,24 @@ class Store:
             (local_uuid,),
         )
 
+    def outbox_returns(self) -> list[dict]:
+        """Navbatда turgan (hali serverга yetmagan) qaytarish payload'lari.
+
+        Server bularni hali bilmaydi, lekin pul kassada allaqachon berilgan —
+        shuning uchun keyingi qaytarishда bularни ham hisobga olamiz."""
+        rows = self.db.execute(
+            "SELECT payload FROM outbox WHERE sent = 0"
+        ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                pl = json.loads(r["payload"])
+            except (ValueError, TypeError):
+                continue
+            if pl.get("kind") == "return":
+                out.append(pl)
+        return out
+
     def discard(self, local_uuid: str, error: str = "") -> None:
         """Bo'sh/yaroqsiz chekni navbatдан chiqaradi (yuborilmaydi, qayta
         urinilmaydi, sanoqqa kirmaydi). sent=2 — tarixda «bekor» ko'rinadi."""
