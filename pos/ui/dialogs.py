@@ -1401,14 +1401,20 @@ class ReturnItemsDialog(BaseDialog):
     ekranda kasr kg terish qiyin, va qaytarishda odatda butun paket qaytadi.
     """
 
-    def __init__(self, sale: dict, parent=None):
+    def __init__(self, sale: dict, parent=None, local_returned: dict | None = None):
         super().__init__(tr("Qaytarish"), width=760, parent=parent)
         self.sale = sale
         self.rows: list[dict] = []
+        # Navbatда turgan (serverга hali yetmagan) qaytarishlar — server
+        # bilmaydi, lekin pul berilgan. Ularni ham ayiramiz, aks holda bir
+        # tovar ikki marta qaytarilib, server rad etardi.
+        local_returned = local_returned or {}
 
         for it in sale["items"]:
             sold = float(it["sold_qty"])
             already = float(it.get("returned_qty") or 0)
+            key = it.get("ms_product_id") or it.get("name")
+            already += float(local_returned.get(key, 0))
             can = max(sold - already, 0)
             if can <= 0:
                 continue  # bu qator to'liq qaytarilgan
