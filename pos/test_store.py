@@ -613,3 +613,89 @@ class BarcodeLookupTest(unittest.TestCase):
     def test_ochirilgan_tovar_kodlari_ham_ochadi(self):
         self.store.replace_products([{"id": 12, "archived": True}])
         self.assertIsNone(self.store.by_barcode("4780001000024"))
+
+
+class HistoryNumberTest(unittest.TestCase):
+    """Chek raqami (SK-…), shu smenadagi cheklar va raqam bo'yicha qidiruv."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.dir.name) / "kassa.db")
+        self.store.replace_products(PRODUCTS)
+
+    def tearDown(self):
+        self.store.close()
+        self.dir.cleanup()
+
+    def _sell(self, backend):
+        cart = Cart()
+        cart.add(self.store.by_barcode("4780001000017"), 1)
+        plan = PaymentPlan(total=cart.total)
+        plan.add_cash(cart.total)
+        backend.submit(cart, plan)
+
+    def test_flush_server_bergan_raqamni_saqlaydi(self):
+        """Yuborilgach server bergan chek raqami (id) diskda saqlanadi."""
+        hub = FakeHub(online=True)
+        backend = LiveBackend(hub, self.store, METHODS)
+        self._sell(backend)
+        self.assertEqual(backend.flush(), 1)
+        row = self.store.recent_sales(1)[0]
+        self.assertEqual(row["sent"], 1)
+        self.assertEqual(row["check_no"], 1)  # FakeHub id = 1
+
+    def test_navbatdagi_chekda_raqam_yoq(self):
+        """Hali yuborilmagan chekда raqam bo'lmaydi (NULL)."""
+        backend = LiveBackend(FakeHub(online=False), self.store, METHODS)
+        self._sell(backend)
+        row = self.store.recent_sales(1)[0]
+        self.assertIsNone(row["check_no"])
+
+    def test_shu_smenadagi_cheklar_ajratiladi(self):
+        """Har chek qaysi smenaга tegishli bo'lsa, o'sha belgi bilan yoziladi."""
+        backend = LiveBackend(FakeHub(online=False), self.store, METHODS)
+
+        self.store.set("history_shift_tag", "srv:10")
+        self._sell(backend)
+        self._sell(backend)
+
+        self.store.set("history_shift_tag", "srv:11")
+        self._sell(backend)
+
+        smena10 = self.store.shift_sales("srv:10")
+        smena11 = self.store.shift_sales("srv:11")
+        self.assertEqual(len(smena10), 2)
+        self.assertEqual(len(smena11), 1)
+
+    def test_belgisiz_bolsa_hamma_tarix(self):
+        """Smena belgisi bo'sh bo'lsa — hamma tarix qaytadi (eski cheklar)."""
+        backend = LiveBackend(FakeHub(online=False), self.store, METHODS)
+        self._sell(backend)
+        self._sell(backend)
+        self.assertEqual(len(self.store.shift_sales("")), 2)
+
+    def test_raqam_boyicha_qidiruv(self):
+        """HistoryDialog chek raqami bo'yicha filtrlaydi."""
+        import os
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from .ui.dialogs import HistoryDialog
+
+        app = QApplication.instance() or QApplication([])
+        rows = [
+            {"check_no": 101, "time": "10:00", "total_text": "3 000",
+             "state": "yuborildi", "is_return": False},
+            {"check_no": 102, "time": "10:05", "total_text": "5 000",
+             "state": "yuborildi", "is_return": False},
+            {"check_no": None, "time": "10:06", "total_text": "1 000",
+             "state": "navbatda", "is_return": False},
+        ]
+        dlg = HistoryDialog(rows)
+        self.assertEqual(dlg.list.count(), 3)   # boshda hammasi
+        dlg._type("101")
+        self.assertEqual(dlg.list.count(), 1)   # faqat 101
+        dlg._type("9")                          # 1019 — mos yo'q
+        self.assertEqual(dlg.list.count(), 0)
+        dlg._clear()
+        self.assertEqual(dlg.list.count(), 3)
+        dlg.deleteLater()
