@@ -181,6 +181,14 @@ _RU: dict[str, str] = {
     "Qaytarilmadi": "Возврат не выполнен",
     "Hali chek yo'q": "Чеков пока нет",
     "Qoldirilgan chek yo'q": "Нет отложенных чеков",
+
+    # --- tarix (shu smenadagi cheklar, chek raqami bo'yicha qidirish) ---
+    "Chek raqami bo'yicha qidirish": "Поиск по номеру чека",
+    "Bu raqamli chek topilmadi": "Чек с таким номером не найден",
+    "Smena #{n}": "Смена #{n}",
+    "Smena (oflayn)": "Смена (оффлайн)",
+    "yuborildi": "отправлен",
+    "navbatda": "в очереди",
     "Qatorni o'chirish": "Удалить строку",
 
     # --- mijoz qidirish / yangi mijoz ---
