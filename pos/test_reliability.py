@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -76,10 +77,83 @@ class JunkReceiptTest(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
+    def test_exhausted_empty_receipt_recovers_after_restart(self):
+        payload = {"local_uuid": "old-empty", "items": [], "net_total": 0,
+                   "payments": []}
+        self.store.queue("old-empty", payload, "2026-09-12")
+        for _ in range(self.store.MAX_ATTEMPTS):
+            self.store.mark_failed("old-empty", "Chek bo'sh")
+        self.assertEqual(self.store.pending_count(), 0)
+        self.assertEqual(self.store.unsent_count(), 1)
+        path = self.store.path
+        self.store.close()
+        self.store = Store(path)
+
+        class Hub:
+            def send_sale(self, payload):
+                raise AssertionError("Empty receipts must not reach the server")
+
+        backend = LiveBackend(Hub(), self.store, [])
+        self.assertEqual(backend.flush(), 0)
+        self.assertEqual(self.store.unsent_count(), 0)
+        self.assertEqual(self.store.stuck_count(), 0)
+        row = self.store.db.execute("SELECT * FROM outbox WHERE local_uuid='old-empty'").fetchone()
+        self.assertEqual(row["sent"], 2)
+        self.assertEqual(json.loads(row["payload"]), payload)
+        self.assertTrue(row["last_error"])
+        self.assertEqual(backend.flush(), 0)
+
+    def test_empty_cleanup_does_not_wait_for_network_or_batch(self):
+        self.store.queue("real-first", _real_receipt("real-first"), "2026-09-12")
+        self.store.queue("empty-later", {"items": [], "net_total": 0}, "2026-09-13")
+
+        class Hub:
+            def send_sale(self, payload):
+                raise HubConnError("offline")
+
+        self.assertEqual(LiveBackend(Hub(), self.store, []).flush(limit=1), 0)
+        self.assertEqual(self.store.unsent_count(), 1)
+        row = self.store.db.execute("SELECT sent FROM outbox WHERE local_uuid='real-first'").fetchone()
+        self.assertEqual(row["sent"], 0)
+
+    def test_cleanup_preserves_stock_money_points_and_uncertain_records(self):
+        stock = {"items": [{"product_id": 1, "quantity": "1", "price": 0,
+                            "total": 0}], "net_total": 0, "payments": []}
+        payloads = [
+            stock,
+            {**stock, "gross_total": 5000, "discount_total": 5000},
+            {**stock, "points_spent": 5000},
+            {"items": [], "net_total": 0, "payments": [{"amount": 5000}]},
+            {"items": [], "net_total": 5000},
+            {"items": [], "net_total": "invalid"},
+            {"items": [{"quantity": "invalid"}], "net_total": 0},
+            {"items": {}},
+            {"payments": {}},
+        ]
+        for i, payload in enumerate(payloads):
+            self.store.queue(str(i), payload, "2026-09-12")
+        self.store.queue("broken-json", {}, "2026-09-12")
+        self.store.db.execute("UPDATE outbox SET payload='{' WHERE local_uuid='broken-json'")
+        self.store.db.execute("UPDATE outbox SET attempts=?", (self.store.MAX_ATTEMPTS,))
+
+        self.assertEqual(LiveBackend(None, self.store, []).flush(), 0)
+        self.assertEqual(self.store.unsent_count(), len(payloads) + 1)
+        for i, payload in enumerate(payloads):
+            row = self.store.db.execute("SELECT payload, sent FROM outbox WHERE local_uuid=?", (str(i),)).fetchone()
+            self.assertEqual(json.loads(row["payload"]), payload)
+            self.assertEqual(row["sent"], 0)
+
+    def test_cleanup_never_changes_already_sent_receipt(self):
+        self.store.queue("delivered", {"items": [], "net_total": 0}, "2026-09-12")
+        self.store.mark_sent("delivered", 42)
+        self.store.discard("delivered", "stale cleanup")
+        row = self.store.db.execute("SELECT sent, check_no, last_error FROM outbox").fetchone()
+        self.assertEqual(tuple(row), (1, 42, ""))
+
     def test_junk_detektor(self):
         self.assertTrue(is_junk_receipt({"items": [], "payments": []}))
         self.assertTrue(is_junk_receipt(
-            {"items": [{"x": 1}], "net_total": 0,
+            {"items": [{"quantity": "0", "total": 0}], "net_total": 0,
              "payments": [{"method": "naqd", "amount": 0}]}))
         self.assertFalse(is_junk_receipt(_real_receipt("r")))
         # Faqat ball bilan to'langan chek — bo'sh EMAS

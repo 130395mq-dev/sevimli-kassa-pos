@@ -20,7 +20,7 @@ import urllib.request
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from .cart import Cart, Customer, PaymentPlan, Product
 from .config import Config
@@ -336,19 +336,37 @@ def sale_payload(cart: Cart, plan: PaymentPlan, local_uuid: str,
 
 
 def is_junk_receipt(payload: dict) -> bool:
-    """Bo'sh yoki 0 summali chek — haqiqiy savdo/qaytarish EMAS.
+    """Faqat tovar harakati, pul va ball bo'lmagan bo'sh yozuv.
 
-    Qaytarishdan keyin ba'zan 0 summali artefakt chek navbatда qolib,
-    server uni rad etardi va kassa uni cheksiz qayta yuborishga urinardi
-    («navbatда 1 chek» xabari ketmasди). Bunday chek: tovari yo'q, yoki
-    pul ham, ball ham 0. Uni yubormaymiz — navbatni to'smasin.
+    Nol summa o'zi yetarli emas: tekin tovar, chegirma yoki ball bilan
+    to'langan haqiqiy chek saqlanadi. Noaniq/buzilgan yozuv ham saqlanadi.
     """
-    if not payload.get("items"):
-        return True
-    pay_total = sum(int(p.get("amount") or 0) for p in (payload.get("payments") or []))
-    points = int(payload.get("points_spent") or 0)
-    net = int(payload.get("net_total") or 0)
-    return net <= 0 and pay_total <= 0 and points <= 0
+    if not isinstance(payload, dict):
+        return False
+    try:
+        fields = ("gross_total", "discount_total", "net_total", "points_spent", "points_earned")
+        if any(Decimal(str(payload.get(key) or 0)) != 0 for key in fields):
+            return False
+        payments = payload.get("payments", [])
+        items = payload.get("items", [])
+        payments = [] if payments is None else payments
+        items = [] if items is None else items
+        if not isinstance(payments, list) or not isinstance(items, list):
+            return False
+        for payment in payments:
+            if not isinstance(payment, dict) or any(
+                Decimal(str(payment.get(key) or 0)) != 0
+                for key in ("amount", "tendered", "change")
+            ):
+                return False
+        return all(
+            isinstance(item, dict) and "quantity" in item
+            and Decimal(str(item["quantity"])) == 0
+            and Decimal(str(item.get("total") or 0)) == 0
+            for item in items
+        )
+    except (InvalidOperation, ValueError, TypeError):
+        return False
 
 
 def return_payload(origin: dict, lines: list[dict], refund_method: str,
@@ -577,9 +595,9 @@ class LiveBackend:
         local_uuid = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
         payload = return_payload(origin, lines, refund_method, local_uuid, created_at)
-        # 0 summali qaytarish — haqiqiy amal emas (hech nima qaytarilmaydi).
-        # Saqlamaymiz: aks holda navbatда bo'sh chek qolib ketardi.
-        if is_junk_receipt(payload):
+        # Bu oynada pul qaytariladi; yangi 0 summali qaytarish yaratilmaydi.
+        # Eski cheklar esa cleanup vaqtida tovar harakati bilan tekshiriladi.
+        if payload["net_total"] <= 0 or is_junk_receipt(payload):
             raise HubError("Qaytarish summasi 0 — hech nima qaytarilmadi")
         self._bind_shift(payload)
 
@@ -682,12 +700,28 @@ class LiveBackend:
                     sh.get("number"))
         return sh
 
+    def discard_empty_receipts(self) -> int:
+        """Eski bo'sh yozuvlarni ham ko'radi; tarmoq va retry limitiga bog'liq emas."""
+        count = 0
+        for row in self.store.unsent_rows():
+            try:
+                payload = json.loads(row["payload"])
+            except (ValueError, TypeError):
+                continue
+            if is_junk_receipt(payload):
+                self.store.discard(row["local_uuid"], "Bo'sh chek — tovar, pul va ball yo'q")
+                count += 1
+        return count
+
     def flush(self, limit: int = 50) -> int:
         """Navbatdagi cheklarni yuboradi. Yuborilganlar sonini qaytaradi.
 
         Avval mahalliy smena bo'lsa uni serverга ochamiz — aks holda
         cheklar «ochiq smena yo'q» bilan qaytadi.
         """
+        # pending() retry limiti tugagan yozuvlarni olmaydi. Ular ham
+        # unsent_count() orqali smenani yopishga to'sqinlik qilishi mumkin.
+        self.discard_empty_receipts()
         self.sync_shift()
         sent = 0
         for row in self.store.pending(limit):
