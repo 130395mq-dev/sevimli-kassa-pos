@@ -329,9 +329,12 @@ def render_sale(r: SaleReceipt, width: int = WIDE) -> str:
     if r.point:
         add(_center(r.point, w))
     add(_line("=", w))
-    add(_center("Chek raqami", w))
-    add(_center(str(r.number), w))
-    add(_pair("Kassir", r.cashier, w, indent=0))
+    if isinstance(r.number, str) and r.number.startswith("SK-"):
+        add(_center("Chek raqami", w))
+        add(_center(r.number, w))
+        add(_pair("Kassir", r.cashier, w, indent=0))
+    else:
+        add(_pair(f"Kassir: {r.cashier}", f"Chek #{r.number}", w, indent=0))
     add(_pair(f"Smena #{r.shift_no}", r.when.strftime("%d.%m.%Y %H:%M"), w, indent=0))
     if r.price_type:
         add(_pair("Narx", r.price_type, w, indent=0))

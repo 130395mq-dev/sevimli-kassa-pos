@@ -1372,7 +1372,7 @@ class ReturnSaleListDialog(BaseDialog):
         self.root.addWidget(sub)
 
         self.list = QListWidget()
-        self.list.setMinimumHeight(420)
+        self.list.setMinimumHeight(320)
         self.list.setStyleSheet(
             f"QListWidget {{ border: 1px solid {t.LINE}; border-radius: 10px;"
             f" background: {t.BG}; }}"
@@ -1427,7 +1427,9 @@ class ReturnSaleListDialog(BaseDialog):
 
             widget = self._sale_row(sale)
             item = QListWidgetItem()
-            item.setSizeHint(widget.minimumSizeHint())
+            hint = widget.minimumSizeHint()
+            hint.setHeight(max(64, hint.height()))
+            item.setSizeHint(hint)
             item.setData(Qt.UserRole, sale)
             self.list.addItem(item)
             self.list.setItemWidget(item, widget)
