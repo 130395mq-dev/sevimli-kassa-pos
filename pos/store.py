@@ -343,10 +343,23 @@ class Store:
             (self.MAX_ATTEMPTS,),
         ).fetchone()[0]
 
-    def mark_sent(self, local_uuid: str, check_no: int | None = None) -> None:
-        """Chek yuborildi. `check_no` — server bergan raqam (Sale.pk),
-        MoySklad «SK-<raqam>» nomi ham shu; tarixда ko'rsatiladi va u bo'yicha
-        qidiriladi. Raqam kelmasa (eski server), avvalgi qiymat saqlanadi."""
+    def mark_sent(self, local_uuid: str, check_no: int | None = None,
+                  receipt_number: str | None = None) -> None:
+        """Chek yuborildi; MoySklad bergan ОТ-* raqamni lokal tarixga yozadi."""
+        if receipt_number:
+            row = self.db.execute(
+                "SELECT payload FROM outbox WHERE local_uuid = ?", (local_uuid,)
+            ).fetchone()
+            if row:
+                try:
+                    payload = json.loads(row["payload"])
+                    payload["receipt_number"] = str(receipt_number)
+                    self.db.execute(
+                        "UPDATE outbox SET payload = ? WHERE local_uuid = ?",
+                        (json.dumps(payload, ensure_ascii=False), local_uuid),
+                    )
+                except (ValueError, TypeError):
+                    pass
         if check_no is not None:
             self.db.execute(
                 "UPDATE outbox SET sent = 1, last_error = '', check_no = ?"
