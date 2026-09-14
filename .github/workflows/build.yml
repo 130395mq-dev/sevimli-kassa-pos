@@ -44,7 +44,7 @@ jobs:
         run: python -c "import pos.main, pos.ui.main_window, pos.ui.payment_dialog, pos.ui.split_payment, pos.ui.login_screen, pos.ui.dialogs"
       - name: Kassa testlari
         run: |
-          python -m unittest pos.test_pos pos.test_store pos.test_links pos.test_update pos.test_split pos.test_session pos.test_reliability
+          python -m unittest pos.test_pos pos.test_store pos.test_links pos.test_update pos.test_split pos.test_session pos.test_reliability pos.test_receipt_integrity
           python -m shared.test_receipt
 
       - name: Validate PowerShell scripts

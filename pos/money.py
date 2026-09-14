@@ -52,3 +52,21 @@ def parse_som(text: str) -> int | None:
     if not cleaned:
         return None
     return int(cleaned) * 100
+
+
+def refund_total(item: dict, quantity) -> int:
+    """Use the server's original net allocation, including earlier refunds."""
+    qty = Decimal(str(quantity))
+    if qty == 0:
+        return 0
+    if "refund_total" not in item:
+        return line_total(int(item["price"]), qty)
+    sold = Decimal(str(item["sold_qty"]))
+    already = Decimal(str(item.get("returned_qty") or 0))
+    if qty < 0 or sold <= 0 or already + qty > sold:
+        raise ValueError("Qaytarish miqdori qolgan miqdordan oshib ketdi")
+    target = (Decimal(item["refund_total"]) * (already + qty) / sold)
+    amount = int(target.quantize(Decimal("1"), rounding=ROUND_HALF_UP)) - int(item.get("returned_total") or 0)
+    if amount < 0:
+        raise ValueError("Qaytarish hisobini menejer tekshirishi kerak")
+    return amount
