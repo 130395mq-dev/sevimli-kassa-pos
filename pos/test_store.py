@@ -9,6 +9,7 @@ ma'nosi shunda: server o'chsa ham savdo davom etadi.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import uuid
@@ -42,7 +43,8 @@ class FakeHub:
         if not self.online:
             raise HubConnError("Serverga ulanib bo'lmadi")
         self.received.append(payload)
-        return {"id": len(self.received), "number": len(self.received)}
+        number = len(self.received)
+        return {"id": number, "number": number, "receipt_number": f"ОТ-{number:04d}"}
 
     def open_shift(self, cashier_id, opening_cash, local_uuid="", opened_at=""):
         if not self.online:
@@ -197,8 +199,8 @@ class OutboxTest(unittest.TestCase):
         backend = LiveBackend(hub, self.store, METHODS)
         backend.submit(self.make_cart(), self._paid_plan())
 
-        self.assertEqual(len(hub.received), 0)
-        self.assertEqual(backend.flush(), 1)
+        self.assertEqual(len(hub.received), 1)
+        self.assertEqual(backend.flush(), 0)
         self.assertEqual(backend.flush(), 0)
         self.assertEqual(len(hub.received), 1)
 
@@ -616,7 +618,7 @@ class BarcodeLookupTest(unittest.TestCase):
 
 
 class HistoryNumberTest(unittest.TestCase):
-    """Chek raqami (SK-…), shu smenadagi cheklar va raqam bo'yicha qidiruv."""
+    """MoySklad bergan ОТ-* raqami tarixda saqlanishi."""
 
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -639,10 +641,11 @@ class HistoryNumberTest(unittest.TestCase):
         hub = FakeHub(online=True)
         backend = LiveBackend(hub, self.store, METHODS)
         self._sell(backend)
-        self.assertEqual(backend.flush(), 1)
+        self.assertEqual(backend.flush(), 0)
         row = self.store.recent_sales(1)[0]
         self.assertEqual(row["sent"], 1)
         self.assertEqual(row["check_no"], 1)  # FakeHub id = 1
+        self.assertEqual(json.loads(row["payload"])["receipt_number"], "ОТ-0001")
 
     def test_navbatdagi_chekda_raqam_yoq(self):
         """Hali yuborilmagan chekда raqam bo'lmaydi (NULL)."""

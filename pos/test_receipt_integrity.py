@@ -9,7 +9,6 @@ from pos.hub import LiveBackend, HubConnError, HubError
 from pos.money import refund_total
 from pos.store import Store
 from pos.test_store import FakeHub, PRODUCTS as ROWS, METHODS
-from shared.identity import receipt_number
 from shared.receipt import SaleReceipt, render_sale
 
 
@@ -71,7 +70,7 @@ class ReceiptIntegrityTest(unittest.TestCase):
         self.assertEqual(calls[0], calls[1])
         self.assertFalse(self.store.get('pending_cash_operation'))
 
-    def test_number_is_identical_before_and_after_offline_delivery(self):
+    def test_offline_receipt_becomes_official_after_delivery(self):
         hub = FakeHub(online=False)
         backend = LiveBackend(hub, self.store, METHODS)
         cart = Cart()
@@ -81,7 +80,7 @@ class ReceiptIntegrityTest(unittest.TestCase):
         backend.submit(cart, plan)
         payload = json.loads(self.store.pending()[0]['payload'])
         number = backend.last_receipt_number
-        self.assertEqual(number, receipt_number(payload['local_uuid']))
+        self.assertEqual(number, 'MoySklad: kutilmoqda')
         receipt = SaleReceipt(market='Sevimli', point='Test', cashier='Test', shift_no=1,
             number=number, when=datetime.now(), items=[], gross_total=cart.total,
             discount_total=0, net_total=cart.total)
@@ -91,7 +90,8 @@ class ReceiptIntegrityTest(unittest.TestCase):
             self.assertTrue(all(len(line) <= width for line in text.splitlines()))
         hub.online = True
         self.assertEqual(backend.flush(), 1)
-        self.assertEqual(hub.received[0]['receipt_number'], number)
+        saved = json.loads(self.store.recent_sales(1)[0]['payload'])
+        self.assertEqual(saved['receipt_number'], 'ОТ-0001')
 
     def test_pending_local_refund_is_included_in_next_quote(self):
         item = {'origin_item_id': 7, 'product_id': 1, 'ms_product_id': 'ms-1',

@@ -1,18 +1,16 @@
 """
 Hub bilan aloqa.
 
-Qoida: **chek avval diskka, keyin serverga.** Kassir «yakunlash» ni
-bosganda chek lokal navbatga yoziladi va shu zahoti «bo'ldi» deyiladi.
-Serverga yuborish keyin, fonda bo'ladi. Internet uzilsa kassir buni
-sezmaydi — faqat status qatorida navbat soni ko'payadi.
+Qoida: **chek avval diskka, keyin serverga.** Onlayn holatda kassa
+MoySklad yaratgan hujjatning haqiqiy ОТ-* raqamini kutib, qog'oz chekni
+shu raqam bilan chiqaradi. Internet uzilsa chek lokal navbatda qoladi va
+vaqtinchalik ekanini ochiq ko'rsatadi.
 
 Takroriy yuborish xavfsiz: har chekning `local_uuid` si bor va server
 o'sha kalit bo'yicha takrorni rad etadi.
 """
 
 from __future__ import annotations
-
-from shared.identity import receipt_number
 
 import json
 import logging
@@ -578,11 +576,31 @@ class LiveBackend:
         payload["price_type_id"] = self.price_type_id
         self._bind_shift(payload)
 
-        payload["receipt_number"] = receipt_number(local_uuid)
         self.store.queue(local_uuid, payload, created_at)
-        self.last_receipt_number = payload["receipt_number"]
+        self.last_receipt_number = "MoySklad: kutilmoqda"
 
-        # Background flush owns the network. The cashier never waits for HTTP.
+        # Onlayn bo'lsa shu zahoti Отгрузка yaratiladi va MoySklad bergan
+        # haqiqiy ОТ-* raqam qog'oz chekda chiqadi. So'rov yo'lda uzilsa chek
+        # lokal navbatda qoladi; local_uuid tufayli qayta yuborish xavfsiz.
+        try:
+            resp = self.hub.send_sale(payload)
+        except (HubConnError, HubAuthError) as e:
+            self.store.note_outage(local_uuid, str(e))
+            return
+        except HubError as e:
+            self.store.mark_failed(local_uuid, str(e))
+            return
+        except Exception as e:
+            # Buzuq/kutilmagan javobda ham diskka yozilgan chek yo'qolmaydi
+            # va kassir uni ikkinchi marta urib yubormaydi.
+            self.store.note_outage(local_uuid, str(e))
+            return
+
+        check_no = resp.get("id") if isinstance(resp, dict) else None
+        official = resp.get("receipt_number") if isinstance(resp, dict) else None
+        self.store.mark_sent(local_uuid, check_no, official)
+        if official:
+            self.last_receipt_number = official
 
     def _bind_shift(self, payload: dict) -> None:
         local = self.store.get_local_shift()
@@ -610,9 +628,8 @@ class LiveBackend:
             raise HubError("Qaytarish summasi 0 — hech nima qaytarilmadi")
         self._bind_shift(payload)
 
-        payload["receipt_number"] = receipt_number(local_uuid)
         self.store.queue(local_uuid, payload, created_at)
-        self.last_receipt_number = payload["receipt_number"]
+        self.last_receipt_number = "MoySklad: kutilmoqda"
         self.last_return_uuid = local_uuid
         return payload["net_total"]
 
@@ -798,10 +815,9 @@ class LiveBackend:
                     self.store.mark_failed(row["local_uuid"], str(e))
                 continue
             else:
-                # Server chek raqamini qaytaradi (Sale.pk = MoySklad «SK-<raqam>»).
-                # Uni saqlaymiz — tarixда ko'rinadi va u bo'yicha qidiriladi.
                 check_no = resp.get("id") if isinstance(resp, dict) else None
-                self.store.mark_sent(row["local_uuid"], check_no)
+                official = resp.get("receipt_number") if isinstance(resp, dict) else None
+                self.store.mark_sent(row["local_uuid"], check_no, official)
                 sent += 1
         return sent
 
