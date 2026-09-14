@@ -381,7 +381,7 @@ class Store:
         """Bo'sh/yaroqsiz chekni navbatдан chiqaradi (yuborilmaydi, qayta
         urinilmaydi, sanoqqa kirmaydi). sent=2 — tarixda «bekor» ko'rinadi."""
         self.db.execute(
-            "UPDATE outbox SET sent = 2, last_error = ? WHERE local_uuid = ?",
+            "UPDATE outbox SET sent = 2, last_error = ? WHERE local_uuid = ? AND sent = 0",
             (error[:500], local_uuid),
         )
 
@@ -392,6 +392,12 @@ class Store:
 
     def unsent_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM outbox WHERE sent=0").fetchone()[0]
+
+    def unsent_rows(self) -> list[sqlite3.Row]:
+        """Tekshirish uchun barcha yuborilmaganlar, urinish limiti tugaganlari ham."""
+        return self.db.execute(
+            "SELECT local_uuid, payload FROM outbox WHERE sent=0 ORDER BY created_at"
+        ).fetchall()
 
     def retry_stuck(self) -> None:
         self.db.execute("UPDATE outbox SET attempts=0 WHERE sent=0 AND attempts>=?",
