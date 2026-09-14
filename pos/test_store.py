@@ -693,8 +693,13 @@ class HistoryNumberTest(unittest.TestCase):
             {"check_no": None, "time": "10:06", "total_text": "1 000",
              "state": "navbatda", "is_return": False},
         ]
-        dlg = HistoryDialog(rows)
+        called = []
+        dlg = HistoryDialog(rows, on_reprint=called.append)
         self.assertEqual(dlg.list.count(), 3)   # boshda hammasi
+        dlg.list.setCurrentRow(0)
+        self.assertTrue(dlg.reprint.isEnabled())
+        dlg._reprint_current()
+        self.assertEqual(called[0]["check_no"], 101)
         dlg._type("101")
         self.assertEqual(dlg.list.count(), 1)   # faqat 101
         dlg._type("9")                          # 1019 — mos yo'q
@@ -702,3 +707,27 @@ class HistoryNumberTest(unittest.TestCase):
         dlg._clear()
         self.assertEqual(dlg.list.count(), 3)
         dlg.deleteLater()
+
+    def test_tarixdan_asl_chek_qayta_chiziladi(self):
+        from .history import render_history_sale
+
+        payload = {
+            "created_at": "2026-09-14T10:25:00+05:00",
+            "receipt_number": "ОТ-0208",
+            "gross_total": 350000,
+            "discount_total": 50000,
+            "points_spent": 0,
+            "points_earned": 3,
+            "items": [{"name": "Non", "quantity": "1", "price": 350000,
+                       "total": 300000}],
+            "payments": [{"method": "naqd", "amount": 300000,
+                          "tendered": 500000, "change": 200000}],
+        }
+        text = render_history_sale(
+            payload, market="Sevimli", point="Shahar", cashier="Ali",
+            shift_no=7, methods=METHODS, width=48,
+        )
+        self.assertIn("ОТ-0208", text)
+        self.assertIn("Non", text)
+        self.assertIn("3 000 so'm", text)
+        self.assertIn("Qaytim", text)
