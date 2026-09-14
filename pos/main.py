@@ -815,6 +815,8 @@ def main() -> int:
         import json as _json
 
         from .money import som
+        from .history import render_history_sale
+        from . import printer
         from .ui.dialogs import HistoryDialog
 
         sh = session.get("shift") or {}
@@ -838,6 +840,7 @@ def main() -> int:
                 "total_text": som(total),
                 "state": state,
                 "is_return": is_return,
+                "payload": payload,
             })
 
         # Smena sarlavhasi — «Smena #12» yoki oflayn.
@@ -846,7 +849,24 @@ def main() -> int:
         else:
             caption = tr("Smena #{n}").format(n=sh["number"])
 
-        HistoryDialog(rows, shift_caption=caption, parent=window).exec()
+        def reprint(row: dict) -> None:
+            text = render_history_sale(
+                row["payload"], market=info.get("market", "Sevimli Market"),
+                point=info.get("point", ""),
+                cashier=(session.get("cashier") or {}).get("name", ""),
+                shift_no=sh.get("number", "—"), methods=backend.methods,
+                width=config.receipt_width,
+            )
+            printed, path = printer.print_sale(
+                text, config.printer, config.paper, config.receipt_width,
+                name="chek-qayta",
+            )
+            window.flash(
+                tr("Chek qayta chop etildi") if printed
+                else tr("Printer javob bermadi. Chek faylga saqlandi: {p}").format(p=path)
+            )
+
+        HistoryDialog(rows, shift_caption=caption, on_reprint=reprint, parent=window).exec()
 
     def refresh_data() -> None:
         # Tarmoq ishi fon oqimida — kassa qotmaydi. Chiroyli oyna bosqichlarni

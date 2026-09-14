@@ -1028,10 +1028,12 @@ class HistoryDialog(BaseDialog):
     tersa, ro'yxat shu zahoti filtrlanadi.
     """
 
-    def __init__(self, rows: list[dict], shift_caption: str = "", parent=None):
+    def __init__(self, rows: list[dict], shift_caption: str = "",
+                 on_reprint=None, parent=None):
         super().__init__(tr("Tarix"), width=620, parent=parent)
         self._rows = rows
         self._query = ""
+        self._on_reprint = on_reprint
 
         if shift_caption:
             cap = _label(shift_caption, 14, t.MUTED)
@@ -1065,9 +1067,19 @@ class HistoryDialog(BaseDialog):
         pad.clear.connect(self._clear)
         self.root.addWidget(pad)
 
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        self.reprint = touch_button(tr("Qayta chop etish"), size=17, height=64, tone="primary")
+        self.reprint.setEnabled(False)
+        self.reprint.clicked.connect(self._reprint_current)
+        self.list.currentItemChanged.connect(
+            lambda current, _previous: self.reprint.setEnabled(current is not None)
+        )
+        actions.addWidget(self.reprint)
         close = touch_button(tr("Yopish"), size=18, height=64, tone="soft")
         close.clicked.connect(self.accept)
-        self.root.addWidget(close)
+        actions.addWidget(close)
+        self.root.addLayout(actions)
 
         self._refresh()
 
@@ -1082,6 +1094,11 @@ class HistoryDialog(BaseDialog):
     def _clear(self) -> None:
         self._query = ""
         self._refresh()
+
+    def _reprint_current(self) -> None:
+        item = self.list.currentItem()
+        if item is not None and self._on_reprint:
+            self._on_reprint(item.data(Qt.UserRole))
 
     def _refresh(self) -> None:
         # Qidiruv maydoni: terilgan raqam yoki bo'sh belgi
@@ -1101,6 +1118,7 @@ class HistoryDialog(BaseDialog):
                 f"    ·    {r.get('total_text', '')} so'm    ·    {r.get('state', '')}"
             )
             item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, r)
             if r.get("is_return"):
                 item.setForeground(_color(t.DANGER))
             self.list.addItem(item)

@@ -189,6 +189,10 @@ _RU: dict[str, str] = {
     "Smena (oflayn)": "Смена (оффлайн)",
     "yuborildi": "отправлен",
     "navbatda": "в очереди",
+    "Qayta chop etish": "ПОВТОРНАЯ ПЕЧАТЬ",
+    "Chek qayta chop etildi": "Чек напечатан повторно",
+    "Printer javob bermadi. Chek faylga saqlandi: {p}":
+        "Принтер не ответил. Чек сохранён в файл: {p}",
     "Qatorni o'chirish": "Удалить строку",
 
     # --- mijoz qidirish / yangi mijoz ---
