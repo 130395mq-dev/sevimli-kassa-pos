@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..money import som
+from ..money import som, refund_total
 from ..i18n import get_lang, tr
 from . import theme as t
 from . import icons
@@ -1092,9 +1092,9 @@ class HistoryDialog(BaseDialog):
         for r in self._rows:
             no = r.get("check_no")
             # Raqam terilgan bo'lsa — faqat mos chek raqamlari
-            if q and not (no is not None and q in str(no)):
+            if q and q not in str(r.get("receipt_number") or no or ""):
                 continue
-            no_txt = f"SK-{no}" if no is not None else "—"
+            no_txt = r.get("receipt_number") or (f"SK-{no}" if no is not None else "—")
             pref = "↩ " if r.get("is_return") else ""
             text = (
                 f"{pref}№ {no_txt}    ·    {r.get('time', '')}"
@@ -1353,9 +1353,18 @@ class ReturnSaleListDialog(BaseDialog):
     Chek raqami, tovar nomi yoki summa bo'yicha qidiriladi.
     """
 
-    def __init__(self, sales: list[dict], parent=None):
+    def __init__(self, sales: list[dict], parent=None, search_fn=None):
         super().__init__(tr("Qaytarish"), width=680, parent=parent)
         self.sales = sales
+        self.search_fn = search_fn
+        self.query = QLineEdit()
+        self.query.setPlaceholderText("Chek raqami yoki mijoz ismi")
+        self.query.setMinimumHeight(48)
+        self.root.addWidget(self.query)
+        find = touch_button("QIDIRISH", size=16, height=48, tone="soft")
+        find.clicked.connect(lambda: self._search(False))
+        self.query.returnPressed.connect(lambda: self._search(False))
+        self.root.addWidget(find)
         self.chosen: dict | None = None
 
         sub = _label(tr("Qaytariladigan savdoni tanlang"), 14, t.MUTED)
@@ -1363,7 +1372,7 @@ class ReturnSaleListDialog(BaseDialog):
         self.root.addWidget(sub)
 
         self.list = QListWidget()
-        self.list.setMinimumHeight(420)
+        self.list.setMinimumHeight(320)
         self.list.setStyleSheet(
             f"QListWidget {{ border: 1px solid {t.LINE}; border-radius: 10px;"
             f" background: {t.BG}; }}"
@@ -1377,6 +1386,23 @@ class ReturnSaleListDialog(BaseDialog):
         close.clicked.connect(self.reject)
         self.root.addWidget(close)
 
+        self.more = touch_button("KEYINGI CHEKLAR", size=16, height=48, tone="soft")
+        self.more.clicked.connect(lambda: self._search(True))
+        self.more.setVisible(bool(search_fn) and len(sales) == 40)
+        self.root.addWidget(self.more)
+        self.refresh()
+
+    def _search(self, more=False):
+        if not self.search_fn:
+            return
+        from PySide6.QtWidgets import QMessageBox
+        try:
+            rows = self.search_fn(self.query.text().strip(), len(self.sales) if more else 0)
+        except Exception as exc:
+            QMessageBox.warning(self, "Qidiruv", str(exc))
+            return
+        self.sales = self.sales + rows if more else rows
+        self.more.setVisible(len(rows) == 40)
         self.refresh()
 
     def refresh(self) -> None:
@@ -1401,7 +1427,9 @@ class ReturnSaleListDialog(BaseDialog):
 
             widget = self._sale_row(sale)
             item = QListWidgetItem()
-            item.setSizeHint(widget.minimumSizeHint())
+            hint = widget.minimumSizeHint()
+            hint.setHeight(max(64, hint.height()))
+            item.setSizeHint(hint)
             item.setData(Qt.UserRole, sale)
             self.list.addItem(item)
             self.list.setItemWidget(item, widget)
@@ -1419,7 +1447,7 @@ class ReturnSaleListDialog(BaseDialog):
 
         mid = QVBoxLayout()
         mid.setSpacing(1)
-        mid.addWidget(_label(f"Chek #{sale['number']}", 15, t.INK))
+        mid.addWidget(_label(f"Chek {sale.get('receipt_number') or sale['number']}", 15, t.INK))
         if sale["customer"]:
             mid.addWidget(_label(sale["customer"], 12.5, t.MUTED))
         row.addLayout(mid, 1)
@@ -1445,7 +1473,7 @@ class ReturnDetailDialog(BaseDialog):
     """Savdo cheki — «Qaytarish yaratish» tugmasi bilan."""
 
     def __init__(self, sale: dict, parent=None):
-        super().__init__(f"Chek #{sale['number']}", width=520, parent=parent)
+        super().__init__(f"Chek {sale.get('receipt_number') or sale['number']}", width=520, parent=parent)
         self.sale = sale
 
         when = _label(sale["created_at"][:16].replace("T", "  "), 13, t.MUTED)
@@ -1469,7 +1497,7 @@ class ReturnDetailDialog(BaseDialog):
             left.addWidget(_label(
                 f"{it['sold_qty']} × {som(it['price'])}", 12.5, t.MUTED))
             r.addLayout(left, 1)
-            total = int(round(it["price"] * float(it["sold_qty"])))
+            total = int(it["refund_total"]) if "refund_total" in it else int(round(it["price"] * float(it["sold_qty"])))
             v = _label(som(total), 14.5, t.INK, bold=True)
             v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             r.addWidget(v)
@@ -1505,10 +1533,10 @@ class ReturnItemsDialog(BaseDialog):
         local_returned = local_returned or {}
 
         for it in sale["items"]:
-            sold = float(it["sold_qty"])
-            already = float(it.get("returned_qty") or 0)
+            sold = Decimal(str(it["sold_qty"]))
+            already = Decimal(str(it.get("returned_qty") or 0))
             key = it.get("ms_product_id") or it.get("name")
-            already += float(local_returned.get(key, 0))
+            already += Decimal(str(local_returned.get(key, 0)))
             can = max(sold - already, 0)
             if can <= 0:
                 continue  # bu qator to'liq qaytarilgan
@@ -1597,7 +1625,7 @@ class ReturnItemsDialog(BaseDialog):
         total = 0
         for row in self.rows:
             it = row["item"]
-            line = int(round(it["price"] * row["qty"]))
+            line = refund_total(it, row["qty"])
             total += line
             row["_qty_lbl"].setText(f"{row['qty']:g}")
             row["_total_lbl"].setText(som(line) if row["qty"] else "0")
@@ -1609,7 +1637,7 @@ class ReturnItemsDialog(BaseDialog):
         self.bar.setText(f"Qaytariladi:  {som(total)} so'm")
 
     def _accept(self) -> None:
-        if self.total > 0:
+        if self.lines:
             self.accept()
 
     @property

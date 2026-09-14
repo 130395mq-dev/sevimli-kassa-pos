@@ -194,9 +194,8 @@ class JunkReceiptTest(unittest.TestCase):
         self.assertEqual(self.store.unsent_count(), 0)
         self.assertEqual(self.store.stuck_count(), 0)
 
-    def test_qaytarish_400_bilan_rad_etilsa_chetga_chiqadi(self):
-        """«Asl chekdan oshib ketdi» (400) — allaqachon qaytarilgan. Qayta
-        urinish yordam bermaydi; chetga chiqadi, navbat tozalanadi."""
+    def test_qaytarish_400_bilan_rad_etilsa_saqlanadi(self):
+        """A rejected real return stays visible with its original payload."""
         class Hub:
             def send_sale(self, payload):
                 raise HubError("Qaytarish asl chekdan oshib ketdi", status=400)
@@ -206,8 +205,13 @@ class JunkReceiptTest(unittest.TestCase):
         self.store.queue("ret-1", ret, "2026-09-13")
         backend = LiveBackend(Hub(), self.store, [])
         backend.flush()
-        self.assertEqual(self.store.unsent_count(), 0)
+        self.assertEqual(self.store.unsent_count(), 1)
         self.assertEqual(self.store.stuck_count(), 0)
+
+        row = self.store.db.execute("SELECT sent, payload, last_error FROM outbox").fetchone()
+        self.assertEqual(row["sent"], 0)
+        self.assertEqual(json.loads(row["payload"]), ret)
+        self.assertIn("oshib", row["last_error"])
 
     def test_qaytarish_409_smena_yoq_bolsa_qayta_uriniladi(self):
         """Qaytarish 409 (smena hali ochilmagan) — keyin tuzaladi, YO'QOLMAYDI."""

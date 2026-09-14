@@ -12,6 +12,8 @@ o'sha kalit bo'yicha takrorni rad etadi.
 
 from __future__ import annotations
 
+from shared.identity import receipt_number
+
 import json
 import logging
 import urllib.error
@@ -142,8 +144,8 @@ class Hub:
 
     # ------------------------------------------------------------ so'rovlar
 
-    def hello(self) -> dict:
-        return self._call("GET", "hello")
+    def hello(self, queue=None) -> dict:
+        return self._call("GET", "hello", params=queue)
 
     def login(self, login: str, password: str) -> dict:
         """Kassir kirishi: login + parol. Kassirlar ro'yxati so'ralmaydi —
@@ -285,16 +287,17 @@ class Hub:
     def shift_report(self) -> dict:
         return self._call("GET", "shift/report")
 
-    def cash(self, kind: str, amount: int, comment: str = "") -> dict:
+    def cash(self, kind: str, amount: int, comment: str = "", local_uuid: str = "", shift_id=None) -> dict:
         return self._call(
-            "POST", "cash", {"kind": kind, "amount": amount, "comment": comment}
+            "POST", "cash", {"kind": kind, "amount": amount, "comment": comment,
+                             "local_uuid": local_uuid or str(uuid.uuid4()), "shift_id": shift_id}
         )
 
     def send_sale(self, payload: dict) -> dict:
         return self._call("POST", "sales", payload)
 
-    def returnable_sales(self) -> list[dict]:
-        return self._call("GET", "sales/returnable")["sales"]
+    def returnable_sales(self, query="", offset=0) -> list[dict]:
+        return self._call("GET", "sales/returnable", params={"q": query, "offset": offset})["sales"]
 
 
 def sale_payload(cart: Cart, plan: PaymentPlan, local_uuid: str,
@@ -376,7 +379,7 @@ def return_payload(origin: dict, lines: list[dict], refund_method: str,
     `lines` — qaytariladigan qatorlar: har biri {item, qty}.
     Pul asl to'lov emas, qaytariladigan summa: bitta usul bilan.
     """
-    from .money import line_total as _line_total
+    from .money import refund_total
 
     items = []
     total = 0
@@ -386,9 +389,12 @@ def return_payload(origin: dict, lines: list[dict], refund_method: str,
         # Pul float bilan hisoblanmaydi — savdodagi bilan bir xil yaxlitlash
         # (Decimal, ROUND_HALF_UP). Aks holda vaznli tovarda bir tiyin farq
         # chiqib, qaytarish summasi asl chek qatoridan farq qilardi.
-        line_total = _line_total(int(item["price"]), Decimal(str(qty)))
+        if "net_total" in origin and "refund_total" not in item:
+            raise HubError("Qaytarish hisobini olish uchun serverni yangilang")
+        line_total = refund_total(item, qty)
         total += line_total
         items.append({
+            "origin_item_id": item.get("origin_item_id"),
             "product_id": item.get("product_id"),
             "ms_product_id": item.get("ms_product_id"),
             "name": item["name"],
@@ -407,7 +413,7 @@ def return_payload(origin: dict, lines: list[dict], refund_method: str,
         "gross_total": total,
         "net_total": total,
         "items": items,
-        "payments": [{"method": refund_method, "amount": total}],
+        "payments": [{"method": refund_method, "amount": total}] if total else [],
     }
 
 
@@ -572,7 +578,9 @@ class LiveBackend:
         payload["price_type_id"] = self.price_type_id
         self._bind_shift(payload)
 
+        payload["receipt_number"] = receipt_number(local_uuid)
         self.store.queue(local_uuid, payload, created_at)
+        self.last_receipt_number = payload["receipt_number"]
 
         # Background flush owns the network. The cashier never waits for HTTP.
 
@@ -597,11 +605,15 @@ class LiveBackend:
         payload = return_payload(origin, lines, refund_method, local_uuid, created_at)
         # Bu oynada pul qaytariladi; yangi 0 summali qaytarish yaratilmaydi.
         # Eski cheklar esa cleanup vaqtida tovar harakati bilan tekshiriladi.
-        if payload["net_total"] <= 0 or is_junk_receipt(payload):
+        if (not payload["items"] or is_junk_receipt(payload) or
+                (payload["net_total"] == 0 and any("refund_total" not in row["item"] or not row["item"].get("origin_item_id") for row in lines))):
             raise HubError("Qaytarish summasi 0 — hech nima qaytarilmadi")
         self._bind_shift(payload)
 
+        payload["receipt_number"] = receipt_number(local_uuid)
         self.store.queue(local_uuid, payload, created_at)
+        self.last_receipt_number = payload["receipt_number"]
+        self.last_return_uuid = local_uuid
         return payload["net_total"]
 
     def local_returned(self, origin_id) -> dict:
@@ -617,8 +629,45 @@ class LiveBackend:
                 agg[key] = agg.get(key, 0) + float(it.get("quantity") or 0)
         return agg
 
-    def returnable_sales(self) -> list[dict]:
-        return self.hub.returnable_sales()
+    def returnable_sales(self, query="", offset=0) -> list[dict]:
+        sales = self.hub.returnable_sales(query, offset)
+        pending = self.store.outbox_returns()
+        for sale in sales:
+            for payload in pending:
+                if payload.get("origin_id") != sale["id"]:
+                    continue
+                for returned in payload.get("items", []):
+                    candidates = [it for it in sale["items"] if
+                        (it.get("origin_item_id") == returned.get("origin_item_id")
+                         if returned.get("origin_item_id") else
+                         (it.get("ms_product_id") or it["name"]) ==
+                         (returned.get("ms_product_id") or returned.get("name")))]
+                    if len(candidates) != 1:
+                        sale["return_error"] = "Mahalliy qaytarishni menejer tekshirishi kerak"
+                        continue
+                    item = candidates[0]
+                    item["returned_qty"] = str(Decimal(str(item.get("returned_qty") or 0)) + Decimal(str(returned["quantity"])))
+                    item["returned_total"] = int(item.get("returned_total") or 0) + int(returned.get("total") or 0)
+        return sales
+
+    def cash(self, kind: str, amount: int, comment: str = "") -> dict:
+        pending = self.store.get("pending_cash_operation")
+        payload = json.loads(pending) if pending else None
+        if payload and (payload["kind"], payload["amount"], payload["comment"]) != (kind, amount, comment):
+            raise HubError(f"Oldingi pul amali tasdiqlanmagan: {payload['amount'] // 100} so'm ({payload['kind']}). Avval shu amalni qayta yuboring.")
+        if not payload:
+            payload = {"kind": kind, "amount": amount, "comment": comment,
+                       "local_uuid": str(uuid.uuid4()),
+                       "shift_id": self.store.get("active_shift_id") or None}
+            self.store.set("pending_cash_operation", json.dumps(payload))
+        try:
+            result = self.hub.cash(**payload)
+        except HubError as exc:
+            if getattr(exc, "status", None) in (400, 401, 403):
+                self.store.set("pending_cash_operation", "")
+            raise
+        self.store.set("pending_cash_operation", "")
+        return result
 
     # ---------------------------------------------------- smena (oflayn ham)
 
@@ -741,22 +790,9 @@ class LiveBackend:
                 self.store.note_outage(row["local_uuid"], str(e))
                 break
             except HubError as e:
-                # Server AYNAN shu chekni rad etdi. Qayta urinish yordam
-                # bermaydigan hollarni chetга chiqaramiz (navbatni to'smasin):
-                #   • bo'sh (0 summali) chek;
-                #   • qaytarish 400 bilan rad etildi — masalan «asl chekdan
-                #     oshib ketdi» (allaqachon qaytarilgan): pul kassada
-                #     allaqachon berilgan, server esa yozmaydi, qancha qayta
-                #     urinsak ham baribir rad etadi.
-                # Boshqa xatolar (narx eskirgan, smena hali ochilmagan h.k.)
-                # — belgilaymiz, keyin qayta uriniladi.
+                # A rejected genuine return remains visible and retryable.
+                # Only proven empty receipts may be discarded automatically.
                 if is_junk_receipt(payload):
-                    self.store.discard(row["local_uuid"], str(e))
-                elif payload.get("kind") == "return" and getattr(e, "status", None) == 400:
-                    logger.warning(
-                        "Qaytarish rad etildi, chetга chiqarildi (%s): %s",
-                        row["local_uuid"], e,
-                    )
                     self.store.discard(row["local_uuid"], str(e))
                 else:
                     self.store.mark_failed(row["local_uuid"], str(e))

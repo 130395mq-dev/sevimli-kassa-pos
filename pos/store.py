@@ -393,6 +393,10 @@ class Store:
     def unsent_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM outbox WHERE sent=0").fetchone()[0]
 
+    def queue_error(self) -> str:
+        row = self.db.execute("SELECT local_uuid, last_error FROM outbox WHERE sent=0 AND last_error<>'' ORDER BY created_at LIMIT 1").fetchone()
+        return f"{row['local_uuid']}: {row['last_error']}" if row else ""
+
     def unsent_rows(self) -> list[sqlite3.Row]:
         """Tekshirish uchun barcha yuborilmaganlar, urinish limiti tugaganlari ham."""
         return self.db.execute(

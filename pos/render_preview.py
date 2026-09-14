@@ -9,6 +9,7 @@ from pos.ui.main_window import MainWindow
 from pos.ui.login_screen import LoginScreen
 from pos.ui.payment_dialog import PaymentDialog
 from pos.ui import theme
+from pos.ui.dialogs import ReturnItemsDialog, ReturnSaleListDialog
 
 class PreviewBackend:
     methods = [{"code":"naqd","name":"Naqd","is_cash":True},
@@ -52,6 +53,21 @@ def main():
     app.processEvents()
     dialog.grab().save(str(out / "payment.png"))
     dialog.close()
+    sample = {"id": 1, "number": 1, "receipt_number": "SK-ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+              "net_total": 270000, "customer": "", "is_cash": True,
+              "created_at": "2026-09-14T10:00:00", "shift": {"number": 1, "closed": False},
+              "items": [{"origin_item_id": 7, "name": "Chegirmali non", "price": 300000,
+                         "sold_qty": "1", "refund_total": 270000, "returned_qty": 0,
+                         "returned_total": 0, "is_weight": False}]}
+    for name, dialog in [("return-items", ReturnItemsDialog(sample, win)),
+                         ("return-search", ReturnSaleListDialog([sample], win))]:
+        dialog.show()
+        app.processEvents()
+        dialog.grab().save(str(out / (name + ".png")))
+        dialog.close()
+    bonus = PaymentDialog(0, backend.methods, win)
+    assert bonus.finish.isEnabled(), "Bonus-only sale cannot finish"
+    bonus.close()
     login = LoginScreen(win, "SEVIMLI", "Kassa 1")
     login.setGeometry(win.rect())
     login.show()

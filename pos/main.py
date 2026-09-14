@@ -371,7 +371,7 @@ def main() -> int:
             point=info.get("point", ""),
             cashier=(session.get("cashier") or {}).get("name", ""),
             shift_no=sh.get("number", "—"),
-            number=sale_no["n"],
+            number=backend.last_receipt_number,
             when=datetime.now(),
             items=items,
             gross_total=cart.gross_total,
@@ -759,7 +759,7 @@ def main() -> int:
         if not amount:
             return
         try:
-            hub.cash(kind, amount)
+            backend.cash(kind, amount)
         except HubError as e:
             QMessageBox.warning(None, tr("Saqlanmadi"), str(e))
             return
@@ -832,6 +832,7 @@ def main() -> int:
             is_return = payload.get("kind") == "return"
             rows.append({
                 "check_no": check_no,
+                "receipt_number": payload.get("receipt_number"),
                 "time": r["created_at"][11:16],
                 "total": total,
                 "total_text": som(total),
@@ -997,10 +998,13 @@ def main() -> int:
             return
 
         # 1. Savdoni tanlash
-        pick = ReturnSaleListDialog(sales, window)
+        pick = ReturnSaleListDialog(sales, window, search_fn=backend.returnable_sales)
         if pick.exec() != ReturnSaleListDialog.Accepted or not pick.chosen:
             return
         sale = pick.chosen
+        if sale.get("return_error"):
+            QMessageBox.warning(window, tr("Qaytarish"), sale["return_error"])
+            return
 
         # 2. Chek — «Qaytarish yaratish»
         detail = ReturnDetailDialog(sale, window)
@@ -1008,7 +1012,7 @@ def main() -> int:
             return
 
         # 3. Qaysi tovar, nechta
-        items = ReturnItemsDialog(sale, window, local_returned=backend.local_returned(sale["id"]))
+        items = ReturnItemsDialog(sale, window)
         # Bu chekda qaytarish uchun hech nima qolmagan bo'lsa (hammasi
         # allaqachon qaytarilgan) — kassirга aniq aytamiz, bo'sh oyna emas.
         if not items.rows:
@@ -1021,21 +1025,34 @@ def main() -> int:
             return
 
         # 4. Pulni qanday qaytaramiz
-        method = RefundMethodDialog(items.total, backend.methods, window)
-        if method.exec() != RefundMethodDialog.Accepted or not method.method:
-            return
+        refund_method = "naqd"
+        if items.total > 0:
+            method = RefundMethodDialog(items.total, backend.methods, window)
+            if method.exec() != RefundMethodDialog.Accepted or not method.method:
+                return
+            refund_method = method.method
 
-        # 5. Saqlash (avval diskka) + chek
         try:
-            amount = backend.submit_return(sale, items.lines, method.method)
+            amount = backend.submit_return(sale, items.lines, refund_method)
+            backend.flush()
         except Exception as e:
             QMessageBox.critical(None, tr("Qaytarilmadi"), str(e))
+            return
+        row = store.db.execute("SELECT sent, last_error FROM outbox WHERE local_uuid=?",
+                               (backend.last_return_uuid,)).fetchone()
+        if not row or row["sent"] != 1:
+            reason = row["last_error"] if row else ""
+            QMessageBox.warning(window, tr("Qaytarish tasdiqlanmadi"),
+                "Qaytarish kassada saqlandi, server hali tasdiqlamadi. "
+                "Pul berishdan oldin Cheklar tarixidan holatini tekshiring.\n" + reason)
+            flush_now.set()
             return
 
         from . import printer
         # Qaytarish cheki — printer bo'lsa chiqaradi
         text = (
-            f"QAYTARISH\nChek #{sale['number']}\n"
+            f"QAYTARISH\nChek: {backend.last_receipt_number}\n"
+            f"Asl chek: {sale.get('receipt_number') or sale['number']}\n"
             f"Qaytarildi: {amount // 100} so'm\n"
         )
         printer.print_text(text, config.printer, name="qaytarish")
@@ -1046,6 +1063,9 @@ def main() -> int:
 
     def close_shift() -> None:
         from . import printer
+        if store.get("pending_cash_operation"):
+            QMessageBox.warning(window, tr("Smena yopilmadi"), "Pul kiritish/chiqarish amali hali tasdiqlanmagan. Avval shu amalni qayta yuboring.")
+            return
 
         # Yopishdan oldin navbatni bo'shatishga urinamiz — chek to'liq
         # bo'lsin. Bo'lmasa ham yopamiz, kassirni kutdirmaymiz.
@@ -1057,8 +1077,8 @@ def main() -> int:
         pending = store.unsent_count()
         if pending:
             QMessageBox.warning(window, tr("Smena yopilmadi"),
-                f"{pending} ta chek hali serverga yetmagan. Internetni tekshiring "
-                "va ma'lumotlarni yangilang. Cheklar yuborilgach smenani yoping.")
+                f"{pending} ta chek hali serverga yetmagan. Cheklar tarixida xato sababini tekshiring. "
+                "Cheklar yuborilgach smenani yoping.\n" + store.queue_error())
             return
         dialog = CloseShiftDialog(pending, window)
         if dialog.exec() != CloseShiftDialog.Accepted:
@@ -1153,7 +1173,7 @@ def main() -> int:
             window.links.set_state("moysklad", "unknown")
         elif pending:
             window.links.set_state(
-                "server", "warn", tr("navbatda {n} ta chek").format(n=pending)
+                "server", "warn", f"Serverga kutilmoqda: {pending} ta chek"
             )
         else:
             window.links.set_state("server", "ok")
@@ -1162,7 +1182,7 @@ def main() -> int:
         if not online:
             text = tr("Oflayn — cheklar kassada saqlanadi") + f" · navbat {pending}"
         else:
-            text = ""
+            text = f"Serverga kutilmoqda: {pending}" if pending else ""
         window.status_label.setText(text)
         window.status_label.setStyleSheet(
             f"color: {'#6B7672' if online and not pending else '#8A5A12'};"
@@ -1540,7 +1560,7 @@ def main() -> int:
                     # bo'lsa, shu yerda kassaga yetadi.
                     bridge.refresh_stage.emit(0)
                     try:
-                        fresh = bg_hub.hello()
+                        fresh = bg_hub.hello(queue={"local_pending": bg_store.unsent_count(), "local_stuck": bg_store.stuck_count(), "local_error": bg_store.queue_error()})
                         bg_store.set("last_hello", _json.dumps(fresh, ensure_ascii=False))
                         last_fp = settings_fingerprint(fresh)
                         bridge.settings_refreshed.emit(fresh)
@@ -1578,7 +1598,7 @@ def main() -> int:
                 # yangilaydi va tokenni uzaytiradi
                 bg_hub.session = getattr(hub, "session", "") or ""
                 try:
-                    fresh = bg_hub.hello()
+                    fresh = bg_hub.hello(queue={"local_pending": bg_store.unsent_count(), "local_stuck": bg_store.stuck_count(), "local_error": bg_store.queue_error()})
                     # Keshni yangilab turamiz — keyingi ochilishда server
                     # o'chiq bo'lsa ham eng so'nggi holat (smena, sozlama)
                     # bilan oflayn davom etiladi.
