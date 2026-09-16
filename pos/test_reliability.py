@@ -268,3 +268,59 @@ class JunkReceiptTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SubmitFlushRaceTest(unittest.TestCase):
+    """`submit` yuborayotgan paytda fon `flush` o'sha chekni IKKINCHI marta
+    yubormasin (2026-09-16: server logida ~200 ms farq bilan 2 ta POST)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name) / "kassa.db")
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_flush_yuborilayotgan_chekni_otkazib_yuboradi(self):
+        store = self.store
+        calls: list[str] = []
+
+        class Hub:
+            def __init__(self, bg):
+                self.bg = bg
+
+            def send_sale(self, payload):
+                calls.append(payload["local_uuid"])
+                if self.bg is not None:
+                    # Yuborish o'rtasida fon oqimi flush qildi (o'sha store)
+                    self.assertEqual_flush = self.bg.flush()
+                return {"id": 1, "number": 1, "receipt_number": "1163"}
+
+        bg_hub = Hub(None)
+        bg = LiveBackend(bg_hub, store, [])
+        bg.sync_shift = lambda: None
+        front = LiveBackend(Hub(bg), store, [])
+        front.sync_shift = lambda: None
+
+        store.queue("u1", _real_receipt("u1"), "2026-09-16")
+        front._send_now("u1", _real_receipt("u1"))
+
+        self.assertEqual(calls, ["u1"])                 # faqat BIR marta
+        self.assertEqual(front.last_receipt_number, "1163")
+        self.assertEqual(store.pending_count(), 0)
+        # Yuborish tugagach belgi olib tashlanadi — keyingi flush oddiy
+        from pos import hub as hubmod
+        self.assertNotIn("u1", hubmod._INFLIGHT)
+
+    def test_xato_bolsa_ham_belgi_olib_tashlanadi(self):
+        class Hub:
+            def send_sale(self, payload):
+                raise HubConnError("internet yo'q")
+
+        backend = LiveBackend(Hub(), self.store, [])
+        self.store.queue("u2", _real_receipt("u2"), "2026-09-16")
+        backend._send_now("u2", _real_receipt("u2"))
+        from pos import hub as hubmod
+        self.assertNotIn("u2", hubmod._INFLIGHT)
+        self.assertEqual(self.store.pending_count(), 1)   # navbatda qoldi, fon yuboradi
