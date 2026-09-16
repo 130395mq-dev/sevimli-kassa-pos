@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +28,14 @@ from .config import Config
 from .store import Store
 from . import device
 from .version import VERSION
+
+#: Hozir `submit` ichida serverga yuborilayotgan cheklar (local_uuid).
+#: Fon oqimidagi `flush` bularni o'tkazib yuboradi — aks holda bitta chek
+#: ikki marta ketma-ket yuborilardi (2026-09-16: server logida ~200 ms
+#: farq bilan ikkita POST, ikkinchisi MoySklad'da «syncId takror»).
+#: Ikki LiveBackend nusxasi (UI va fon) bitta jarayonda — modul darajasi.
+_INFLIGHT: set[str] = set()
+_INFLIGHT_LOCK = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -578,29 +587,43 @@ class LiveBackend:
 
         self.store.queue(local_uuid, payload, created_at)
         self.last_receipt_number = "MoySklad: kutilmoqda"
+        self._send_now(local_uuid, payload)
 
-        # Onlayn bo'lsa shu zahoti Отгрузка yaratiladi va MoySklad bergan
-        # haqiqiy ОТ-* raqam qog'oz chekda chiqadi. So'rov yo'lda uzilsa chek
-        # lokal navbatda qoladi; local_uuid tufayli qayta yuborish xavfsiz.
+    def _send_now(self, local_uuid: str, payload: dict) -> None:
+        """Navbatga yozilgan chekni shu zahoti serverga yuboradi.
+
+        Onlayn bo'lsa Отгрузка darhol yaratiladi va MoySklad bergan haqiqiy
+        raqam qog'oz chekda chiqadi. So'rov yo'lda uzilsa chek lokal
+        navbatda qoladi; local_uuid tufayli qayta yuborish xavfsiz.
+
+        Yuborish davomida chek `_INFLIGHT` da turadi — fon `flush` uni
+        ikkinchi marta yubormaydi.
+        """
+        with _INFLIGHT_LOCK:
+            _INFLIGHT.add(local_uuid)
         try:
-            resp = self.hub.send_sale(payload)
-        except (HubConnError, HubAuthError) as e:
-            self.store.note_outage(local_uuid, str(e))
-            return
-        except HubError as e:
-            self.store.mark_failed(local_uuid, str(e))
-            return
-        except Exception as e:
-            # Buzuq/kutilmagan javobda ham diskka yozilgan chek yo'qolmaydi
-            # va kassir uni ikkinchi marta urib yubormaydi.
-            self.store.note_outage(local_uuid, str(e))
-            return
+            try:
+                resp = self.hub.send_sale(payload)
+            except (HubConnError, HubAuthError) as e:
+                self.store.note_outage(local_uuid, str(e))
+                return
+            except HubError as e:
+                self.store.mark_failed(local_uuid, str(e))
+                return
+            except Exception as e:
+                # Buzuq/kutilmagan javobda ham diskka yozilgan chek yo'qolmaydi
+                # va kassir uni ikkinchi marta urib yubormaydi.
+                self.store.note_outage(local_uuid, str(e))
+                return
 
-        check_no = resp.get("id") if isinstance(resp, dict) else None
-        official = resp.get("receipt_number") if isinstance(resp, dict) else None
-        self.store.mark_sent(local_uuid, check_no, official)
-        if official:
-            self.last_receipt_number = official
+            check_no = resp.get("id") if isinstance(resp, dict) else None
+            official = resp.get("receipt_number") if isinstance(resp, dict) else None
+            self.store.mark_sent(local_uuid, check_no, official)
+            if official:
+                self.last_receipt_number = official
+        finally:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.discard(local_uuid)
 
     def _bind_shift(self, payload: dict) -> None:
         local = self.store.get_local_shift()
@@ -791,6 +814,10 @@ class LiveBackend:
         self.sync_shift()
         sent = 0
         for row in self.store.pending(limit):
+            # Shu chek hozir `submit` ichida yuborilyapti — tegmaymiz.
+            with _INFLIGHT_LOCK:
+                if row["local_uuid"] in _INFLIGHT:
+                    continue
             payload = json.loads(row["payload"])
             # Bo'sh (0 summali) chek — serverга umuman yubormaymiz. Aks holda
             # server uni rad etib turadi, kassa cheksiz qayta urinadi va
