@@ -180,20 +180,23 @@ class FullKeyboard(QWidget):
     #: Manzil (URL) uchun kerak belgilar
     SYMBOLS = ".:/-@_"
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, key_height: int = 50):
+        """`key_height` — tugma balandligi. Kichik ekranda (Kassani ulash
+        oynasi ekranga sig'masa) ixcham qiymat beriladi."""
         super().__init__(parent)
         self._upper = False
         self._letter_buttons: list[QPushButton] = []
+        h = key_height
 
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(6)
+        col.setSpacing(6 if h >= 50 else 4)
 
         for line in self.ROWS:
             row = QGridLayout()
-            row.setSpacing(5)
+            row.setSpacing(5 if h >= 50 else 4)
             for i, ch in enumerate(line):
-                btn = touch_button(ch, size=17, height=50)
+                btn = touch_button(ch, size=17, height=h)
                 btn.clicked.connect(lambda _=False, b=btn: self._emit(b.text()))
                 if ch.isalpha():
                     self._letter_buttons.append(btn)
@@ -204,18 +207,18 @@ class FullKeyboard(QWidget):
 
         # Pastki qator: ⇧, belgilar, ←
         bottom = QGridLayout()
-        bottom.setSpacing(5)
+        bottom.setSpacing(5 if h >= 50 else 4)
 
-        self._shift = touch_button("⇧", size=20, height=50, tone="soft")
+        self._shift = touch_button("⇧", size=20, height=h, tone="soft")
         self._shift.clicked.connect(self._toggle_shift)
         bottom.addWidget(self._shift, 0, 0)
 
         for i, ch in enumerate(self.SYMBOLS):
-            btn = touch_button(ch, size=18, height=50, tone="soft")
+            btn = touch_button(ch, size=18, height=h, tone="soft")
             btn.clicked.connect(lambda _=False, c=ch: self.key.emit(c))
             bottom.addWidget(btn, 0, i + 1)
 
-        back = touch_button("←", size=22, height=50, tone="soft")
+        back = touch_button("←", size=22, height=h, tone="soft")
         back.clicked.connect(self.backspace.emit)
         bottom.addWidget(back, 0, len(self.SYMBOLS) + 1)
 
