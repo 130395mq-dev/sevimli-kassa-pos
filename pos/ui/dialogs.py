@@ -82,13 +82,13 @@ class BaseDialog(QDialog):
         heading.setAlignment(Qt.AlignCenter)
         self.root.addWidget(heading)
 
-    def buttons(self, ok_text: str, on_ok=None) -> None:
+    def buttons(self, ok_text: str, on_ok=None, height: int = 68) -> None:
         """Pastdagi ikkita tugma: bekor va tasdiqlash."""
         row = QHBoxLayout()
         row.setSpacing(10)
-        cancel = touch_button(tr("Bekor"), size=17, height=68, tone="soft")
+        cancel = touch_button(tr("Bekor"), size=17, height=height, tone="soft")
         cancel.clicked.connect(self.reject)
-        ok = touch_button(ok_text, size=18, height=68, tone="accent")
+        ok = touch_button(ok_text, size=18, height=height, tone="accent")
         ok.clicked.connect(on_ok or self.accept)
         row.addWidget(cancel, 2)
         row.addWidget(ok, 3)
@@ -1241,6 +1241,34 @@ class LoginDialog(BaseDialog):
 # --------------------------------------------------------------- ulanish
 
 
+def _available_screen_height() -> int:
+    """Ekranning bo'sh qismi (vazifalar paneli chiqarilgan), mantiqiy px.
+    Ekran aniqlanmasa — katta deb olinadi (oddiy rejim)."""
+    try:
+        from PySide6.QtGui import QGuiApplication
+        screen = QGuiApplication.primaryScreen()
+        return screen.availableGeometry().height() if screen else 10_000
+    except Exception:  # noqa: BLE001
+        return 10_000
+
+
+def _fit_to_screen(dialog) -> None:
+    try:
+        from PySide6.QtGui import QGuiApplication
+        screen = dialog.screen() or QGuiApplication.primaryScreen()
+        if not screen:
+            return
+        area = screen.availableGeometry()
+        dialog.setMaximumHeight(area.height())
+        w = min(dialog.width(), area.width())
+        h = min(dialog.height(), area.height())
+        dialog.resize(w, h)
+        dialog.move(area.x() + (area.width() - w) // 2,
+                    area.y() + max(0, (area.height() - h) // 2))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class SetupDialog(BaseDialog):
     """Kassani ulash — faqat login va parol, ekran klaviaturasi bilan.
 
@@ -1255,11 +1283,25 @@ class SetupDialog(BaseDialog):
         "parol": tr("Kassa paroli"),
     }
 
-    def __init__(self, server_url: str, connect_fn, parent=None):
+    #: Shu balandlikdan (mantiqiy piksel, ekranning bo'sh qismi) kichik
+    #: ekranda ixcham rejim: kichik ekran / Windows masshtabi 125–150% da
+    #: oyna ekrandan uzun chiqib, ULASH tugmasi pastga tushib ketardi
+    #: (2026-09-17, egasining skrinshoti).
+    COMPACT_BELOW = 800
+
+    def __init__(self, server_url: str, connect_fn, parent=None,
+                 screen_height: int | None = None):
         super().__init__(tr("Kassani ulash"), width=700, parent=parent)
         self.connect_fn = connect_fn
         self.result: dict | None = None
         from ..config import DEFAULT_SERVER
+
+        if screen_height is None:
+            screen_height = _available_screen_height()
+        self.compact = screen_height < self.COMPACT_BELOW
+        if self.compact:
+            self.root.setContentsMargins(16, 12, 16, 12)
+            self.root.setSpacing(8)
 
         self.values = {
             "server": server_url or DEFAULT_SERVER,
@@ -1277,7 +1319,7 @@ class SetupDialog(BaseDialog):
 
         self.rows: dict[str, object] = {}
         for key in ("login", "parol"):
-            btn = touch_button("", size=16, height=58, tone="soft")
+            btn = touch_button("", size=16, height=46 if self.compact else 58, tone="soft")
             btn.clicked.connect(lambda _=False, k=key: self.select(k))
             self.rows[key] = btn
             self.root.addWidget(btn)
@@ -1287,13 +1329,19 @@ class SetupDialog(BaseDialog):
         self.hint.setAlignment(Qt.AlignCenter)
         self.root.addWidget(self.hint)
 
-        keyboard = FullKeyboard()
+        keyboard = FullKeyboard(key_height=38 if self.compact else 50)
         keyboard.key.connect(self.on_key)
         keyboard.backspace.connect(self.on_backspace)
         self.root.addWidget(keyboard)
 
-        self.buttons(tr("ULASH"), self._try)
+        self.buttons(tr("ULASH"), self._try, height=54 if self.compact else 68)
         self.refresh()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """Oyna har doim ekran ichida: balandligi ekrandan oshmaydi va
+        markazga qo'yiladi — ULASH tugmasi doim ko'rinadi."""
+        super().showEvent(event)
+        _fit_to_screen(self)
 
     def select(self, key: str) -> None:
         self.active = key
