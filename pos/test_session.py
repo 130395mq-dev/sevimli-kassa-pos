@@ -180,3 +180,52 @@ class LoginScreenResumeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class LoginScreenKeyboardTest(unittest.TestCase):
+    """Ekran klaviaturasi standart YASHIRIN; «⌨» tugmasi ko'rsatadi/yashiradi,
+    tanlov signal orqali kassaga eslab qolinadi; jismoniy klaviatura ishlaydi."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        from PySide6.QtWidgets import QWidget
+        self.parent = QWidget()
+        self.parent.resize(1200, 760)
+
+    def _screen(self, **kw):
+        from pos.ui.login_screen import LoginScreen
+        return LoginScreen(self.parent, "Chilonzor", "Kassa-1", **kw)
+
+    def test_standart_yashirin_va_tugma_bilan_chiqadi(self):
+        s = self._screen()
+        self.assertFalse(s.keyboard_visible)
+        self.assertTrue(s.keyboard.isHidden())
+        got = []
+        s.keyboard_toggled.connect(got.append)
+        s.kb_toggle.click()
+        self.assertTrue(s.keyboard_visible)
+        self.assertEqual(got, [True])
+        s.kb_toggle.click()
+        self.assertFalse(s.keyboard_visible)
+        self.assertEqual(got, [True, False])
+
+    def test_eslab_qolingan_tanlov_bilan_ochiladi(self):
+        s = self._screen(show_keyboard=True)
+        self.assertTrue(s.keyboard_visible)
+        self.assertFalse(s.keyboard.isHidden())
+
+    def test_jismoniy_klaviatura_ishlaydi(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QKeyEvent
+        from PySide6.QtCore import QEvent
+        s = self._screen()
+        for ch in "ab":
+            s.keyPressEvent(QKeyEvent(QEvent.KeyPress, ord(ch.upper()), Qt.NoModifier, ch))
+        self.assertEqual(s.values["login"], "ab")
+        s.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Tab, Qt.NoModifier, "\t"))
+        s.keyPressEvent(QKeyEvent(QEvent.KeyPress, ord("1"), Qt.NoModifier, "1"))
+        self.assertEqual(s.values["parol"], "1")
