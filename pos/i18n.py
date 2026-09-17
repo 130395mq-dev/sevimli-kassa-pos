@@ -116,6 +116,8 @@ _RU: dict[str, str] = {
 
     # --- kirish ---
     "Kassaga kirish": "Вход в кассу",
+    "⌨  Ekran klaviaturasi": "⌨  Экранная клавиатура",
+    "⌨  Ekran klaviaturasini yashirish": "⌨  Скрыть экранную клавиатуру",
     "Kassirni tanlang": "Выберите кассира",
     "Kamida 3 raqam kiriting": "Введите минимум 3 цифры",
 
