@@ -204,3 +204,33 @@ class ReceiptRowTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SetupDialogFitTest(unittest.TestCase):
+    """«Kassani ulash» oynasi kichik ekranga sig'sin (2026-09-17: ULASH
+    tugmasi ekran ostiga tushib ketgan edi)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _dialog(self, screen_height):
+        from pos.ui.dialogs import SetupDialog
+        d = SetupDialog("https://x", lambda *a: None, screen_height=screen_height)
+        d.adjustSize()
+        return d
+
+    def test_kichik_ekranda_ixcham_va_sigadi(self):
+        d = self._dialog(576)             # 1366×768 @125% → 614, panel bilan ~576
+        self.assertTrue(d.compact)
+        self.assertLessEqual(d.sizeHint().height(), 576)
+
+    def test_katta_ekranda_oddiy(self):
+        d = self._dialog(1040)
+        self.assertFalse(d.compact)
+        self.assertLessEqual(d.sizeHint().height(), 1040)
+
+    def test_ixcham_oddiydan_past(self):
+        self.assertLess(self._dialog(576).sizeHint().height(),
+                        self._dialog(1040).sizeHint().height())
