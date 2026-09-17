@@ -229,10 +229,13 @@ class LoginScreen(QWidget):
     quit_requested = Signal()
     resume_requested = Signal()
     logout_requested = Signal()
+    #: Ekran klaviaturasi ko'rsatildi/yashirildi — kassa buni eslab qoladi
+    keyboard_toggled = Signal(bool)
 
     LOGIN, PAROL = "login", "parol"
 
-    def __init__(self, parent: QWidget, point: str = "", register: str = ""):
+    def __init__(self, parent: QWidget, point: str = "", register: str = "",
+                 show_keyboard: bool = False):
         super().__init__(parent)
         self.setObjectName("loginScreen")
         self.setAutoFillBackground(True)
@@ -241,6 +244,11 @@ class LoginScreen(QWidget):
         self.active = self.LOGIN
         self._point = point
         self._register = register
+        # Ekran klaviaturasi standart YASHIRIN (egasining qarori, 2026-09-17):
+        # jismoniy klaviatura bor kassalarda u faqat joy oladi va kichik
+        # ekranda buzilib chiqadi. Klaviaturasiz (sensorli) kassada kassir
+        # «⌨» tugmasini bir marta bosadi — tanlov shu kassada eslab qolinadi.
+        self._show_keyboard = bool(show_keyboard)
         parent.installEventFilter(self)
 
         root = QHBoxLayout(self)
@@ -355,11 +363,27 @@ class LoginScreen(QWidget):
         col.addWidget(self.hint)
         col.addSpacing(6)
 
-        keyboard = _Keyboard()
-        keyboard.key.connect(self.on_key)
-        keyboard.backspace.connect(self.on_backspace)
-        col.addWidget(keyboard)
-        col.addSpacing(16)
+        self.keyboard = _Keyboard()
+        self.keyboard.key.connect(self.on_key)
+        self.keyboard.backspace.connect(self.on_backspace)
+        col.addWidget(self.keyboard)
+        self._kb_gap = QWidget()
+        self._kb_gap.setFixedHeight(16)
+        col.addWidget(self._kb_gap)
+
+        self.kb_toggle = QPushButton()
+        self.kb_toggle.setFixedHeight(34)
+        self.kb_toggle.setCursor(Qt.PointingHandCursor)
+        self.kb_toggle.setFocusPolicy(Qt.NoFocus)
+        self.kb_toggle.setStyleSheet(
+            f"QPushButton {{ background:transparent; color:{t.MUTED};"
+            f" border:none; font-size:13px; font-weight:600; }}"
+            f"QPushButton:hover {{ color:{t.INK_SOFT}; }}"
+        )
+        self.kb_toggle.clicked.connect(self.toggle_keyboard)
+        col.addWidget(self.kb_toggle, 0, Qt.AlignHCenter)
+        col.addSpacing(6)
+        self._apply_keyboard_visibility()
 
         self.enter = QPushButton(tr("KIRISH"))
         self.enter.setFixedHeight(62)
@@ -541,6 +565,26 @@ class LoginScreen(QWidget):
         self.active = key
         self._caret = True
         self.refresh()
+
+    # ------------------------------------------------- ekran klaviaturasi
+
+    @property
+    def keyboard_visible(self) -> bool:
+        return self._show_keyboard
+
+    def toggle_keyboard(self) -> None:
+        self._show_keyboard = not self._show_keyboard
+        self._apply_keyboard_visibility()
+        self.keyboard_toggled.emit(self._show_keyboard)
+        self.setFocus()  # jismoniy klaviatura ishlashda davom etsin
+
+    def _apply_keyboard_visibility(self) -> None:
+        self.keyboard.setVisible(self._show_keyboard)
+        self._kb_gap.setVisible(self._show_keyboard)
+        self.kb_toggle.setText(
+            tr("⌨  Ekran klaviaturasini yashirish") if self._show_keyboard
+            else tr("⌨  Ekran klaviaturasi")
+        )
 
     def on_key(self, ch: str) -> None:
         if len(self.values[self.active]) < 64:
