@@ -282,8 +282,12 @@ def main() -> int:
     from .ui.login_screen import LoginScreen
 
     login_screen = LoginScreen(
-        window, info.get("point", ""), (info.get("register") or {}).get("name", "")
+        window, info.get("point", ""), (info.get("register") or {}).get("name", ""),
+        show_keyboard=store.get("login_screen_keyboard", "0") == "1",
     )
+    # Ekran klaviaturasi tanlovi shu kassada eslab qolinadi
+    login_screen.keyboard_toggled.connect(
+        lambda on: store.set("login_screen_keyboard", "1" if on else "0"))
 
     session = {"shift": shift, "cashier": cashier, "offline": offline}
 
