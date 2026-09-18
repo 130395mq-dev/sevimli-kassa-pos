@@ -42,6 +42,11 @@ class Config:
     paper: str = "80"
     #: Har savdodan keyin chek avtomatik chiqsinmi
     auto_print: bool = True
+    #: ESC/POS kod sahifasi raqami (ESC t n). 17 = PC866 (kirill).
+    #: Printer boshqacha kutsa shu yerda o'zgartiriladi — qayta yig'ish shart emas.
+    printer_codepage: int = 17
+    #: Chek matni shu kodlash bilan yuboriladi (kod sahifasiga mos bo'lishi kerak)
+    printer_encoding: str = "cp866"
     #: Interfeys tili: "uz" yoki "ru"
     language: str = "uz"
     #: Katalogni qayta so'rash oralig'i, sekundda (farq so'rovi arzon —
