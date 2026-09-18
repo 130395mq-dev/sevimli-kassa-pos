@@ -46,6 +46,8 @@ CREATE INDEX IF NOT EXISTS products_name    ON products(name);
 CREATE TABLE IF NOT EXISTS barcodes (
     code       TEXT NOT NULL,
     product_id INTEGER NOT NULL,
+    -- Upakovka (MoySklad «Упаковка») kodi bo'lsa — ichida nechta dona; oddiy kod 1
+    quantity   REAL NOT NULL DEFAULT 1,
     PRIMARY KEY (code, product_id)
 );
 CREATE INDEX IF NOT EXISTS barcodes_product ON barcodes(product_id);
@@ -124,6 +126,11 @@ class Store:
             self.db.execute("ALTER TABLE outbox ADD COLUMN check_no INTEGER")
         if "shift_tag" not in ob_cols:
             self.db.execute("ALTER TABLE outbox ADD COLUMN shift_tag TEXT NOT NULL DEFAULT ''")
+
+        # Upakovka kodlari (1.17.14): kod ichida nechta dona
+        bc_cols = {r[1] for r in self.db.execute("PRAGMA table_info(barcodes)")}
+        if "quantity" not in bc_cols:
+            self.db.execute("ALTER TABLE barcodes ADD COLUMN quantity REAL NOT NULL DEFAULT 1")
 
     def set_price_type(self, price_type_id: str | None) -> None:
         """Kassa qaysi narx turida sotadi — saqlanadi, qayta ochilganda ham
@@ -220,10 +227,20 @@ class Store:
             for c in codes:
                 c = str(c or "").strip()
                 if c:
-                    pairs.append((c, r["id"]))
+                    pairs.append((c, r["id"], 1.0))
+            # Upakovka kodlari: server «packs» [{barcode, quantity}] beradi —
+            # skanerlansa shuncha dona qo'shiladi (6 talik upakovka → 6).
+            for pk in r.get("packs") or []:
+                c = str((pk or {}).get("barcode") or "").strip()
+                try:
+                    q = float((pk or {}).get("quantity") or 0)
+                except (TypeError, ValueError):
+                    q = 0
+                if c and q > 0:
+                    pairs.append((c, r["id"], q))
         if pairs:
             self.db.executemany(
-                "INSERT OR IGNORE INTO barcodes (code, product_id) VALUES (?, ?)", pairs
+                "INSERT OR REPLACE INTO barcodes (code, product_id, quantity) VALUES (?, ?, ?)", pairs
             )
         return stats
 
@@ -250,19 +267,30 @@ class Store:
 
     def by_barcode(self, code: str) -> Product | None:
         """Aynan shu kodli tovar — asosiy kod yoki qo'shimcha kodlardan biri."""
+        found = self.by_barcode_qty(code)
+        return found[0] if found else None
+
+    def by_barcode_qty(self, code: str):
+        """Kod → (tovar, nechta dona). Oddiy kod — 1; upakovka kodi —
+        upakovkadagi dona soni (masalan 6). Topilmasa None."""
         code = (code or "").strip()
         if not code:
             return None
         row = self.db.execute(
-            "SELECT * FROM products WHERE barcode = ?", (code,)
+            "SELECT p.*, b.quantity AS pack_qty FROM products p "
+            "JOIN barcodes b ON b.product_id = p.id WHERE b.code = ? "
+            "ORDER BY b.quantity LIMIT 1",
+            (code,),
         ).fetchone()
+        qty = float(row["pack_qty"] or 1) if row else 1.0
         if not row:
             row = self.db.execute(
-                "SELECT p.* FROM products p JOIN barcodes b ON b.product_id = p.id "
-                "WHERE b.code = ? LIMIT 1",
-                (code,),
+                "SELECT * FROM products WHERE barcode = ?", (code,)
             ).fetchone()
-        return self._to_product(row) if row else None
+            qty = 1.0
+        if not row:
+            return None
+        return self._to_product(row), qty
 
     def by_plu(self, plu: int) -> Product | None:
         # Tarozi yorlig'idagi PLU -> tovar. Ikki yo'l bilan qidiramiz:
