@@ -315,3 +315,23 @@ class SplitPaymentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class PrinterHeadTest(unittest.TestCase):
+    """Chekda koreys/xitoy harflari chiqmasin (2026-09-18): printer «Chinese
+    mode» da bo'lsa kirill baytlari ieroglifga aylanadi. Har chekdan oldin
+    FS «.» yuborib shu rejimni o'chiramiz."""
+
+    def test_cjk_ochiriladi_va_kod_sahifasi(self):
+        from pos import printer
+
+        h = printer.head_bytes()
+        self.assertTrue(h.startswith(printer.INIT))
+        self.assertIn(b"\x1c\x2e", h)                  # FS . — CJK rejimi o'chdi
+        self.assertTrue(h.endswith(b"\x1bt\x11"))      # PC866 (kirill)
+        self.assertLess(h.index(b"\x1c\x2e"), h.index(b"\x1bt\x11"))
+
+    def test_kirill_cp866_da_yuboriladi(self):
+        from pos import printer
+
+        self.assertEqual(printer._encode("гуруч"), "гуруч".encode("cp866"))
