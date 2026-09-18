@@ -531,6 +531,8 @@ class BarcodeLookupTest(unittest.TestCase):
             # Bir nechta shtrix-kodli tovar (dona + blok)
             {"id": 12, "ms_id": "ms-12", "name": "Suv 0.5", "code": "77",
              "barcode": "4780001000017", "barcodes": ["4780001000017", "4780001000024"],
+             # Upakovka (MoySklad «Упаковка»): 6 talik blok kodi
+             "packs": [{"barcode": "14780001000014", "quantity": 6}],
              "price": 2_000_00, "is_weight": False, "plu": None, "tracked": False, "stock": 40},
         ])
         self.backend = LiveBackend(FakeHub(), self.store, METHODS)
@@ -543,6 +545,27 @@ class BarcodeLookupTest(unittest.TestCase):
         product, qty = self.backend.find_by_barcode(self.MS_CODE)
         self.assertEqual(product.name, "Shampun")
         self.assertEqual(qty, Decimal(1))
+
+    def test_upakovka_kodi_6_dona(self):
+        """MoySklad upakovka kodi skanerlansa — upakovkadagi dona soni."""
+        product, qty = self.backend.find_by_barcode("14780001000014")
+        self.assertEqual(product.name, "Suv 0.5")
+        self.assertEqual(qty, Decimal(6))
+        # Oddiy kodlari avvalgidek 1 dona
+        for code in ("4780001000017", "4780001000024"):
+            product, qty = self.backend.find_by_barcode(code)
+            self.assertEqual((product.name, qty), ("Suv 0.5", Decimal(1)))
+
+    def test_upakovka_yangilansa_eski_miqdor_qolmaydi(self):
+        self.store.replace_products([
+            {"id": 12, "ms_id": "ms-12", "name": "Suv 0.5", "code": "77",
+             "barcode": "4780001000017", "barcodes": ["4780001000017"],
+             "packs": [{"barcode": "14780001000014", "quantity": 12}],
+             "price": 2_000_00, "is_weight": False, "plu": None, "tracked": False, "stock": 40},
+        ])
+        product, qty = self.backend.find_by_barcode("14780001000014")
+        self.assertEqual(qty, Decimal(12))
+        self.assertIsNone(self.backend.find_by_barcode("4780001000024"))   # o'chirilgan kod
 
     def test_moysklad_kodi_katalogda_bolmasa_ham_kilo_qilib_sotilmaydi(self):
         """Kod katalogda yo'q: tarozi deb o'qilsa PLU 32 → «Shampun» 96.927 kg
