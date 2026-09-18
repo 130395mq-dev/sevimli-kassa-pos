@@ -483,9 +483,12 @@ class LiveBackend:
         #    kodi deb o'qilib, donali tovar «96.927 kg» bo'lib sotilardi
         #    (2026-09, kod 2000003296927). Katalogdagi aniq moslik har
         #    doim tarozi taxminidan ustun.
-        product = self.store.by_barcode(code)
-        if product:
-            return product, Decimal(1)
+        found = self.store.by_barcode_qty(code)
+        if found:
+            product, pack_qty = found
+            # Upakovka kodi (MoySklad «Упаковка», masalan 6 dona) — shuncha
+            # dona qo'shiladi; oddiy kod — 1.
+            return product, Decimal(str(pack_qty)) if pack_qty and pack_qty != 1 else Decimal(1)
 
         # 2) Katalogda yo'q — tarozi yorlig'imi? (prefiks + PLU + vazn)
         scan = parse(code)
