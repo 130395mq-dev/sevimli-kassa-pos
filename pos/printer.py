@@ -44,6 +44,18 @@ GS = b"\x1d"
 INIT = ESC + b"@"
 #: Kod sahifasi PC866 (rus harflari ham chiqadi). Lotin — baribir ASCII.
 CODEPAGE_866 = ESC + b"t\x11"
+#: Xitoy/yapon (Kanji) rejimini O'CHIRADI — FS «.»
+#:
+#: MUHIM (2026-09-18): ko'p arzon termal printerlar (Xprinter, Rongta va h.k.)
+#: zavoddan «Chinese mode» yoqilgan holda keladi yoki o'chib-yonganda shu
+#: rejimga qaytadi. Unda 0x80—0xFF baytlari ikki baytli ieroglif deb
+#: o'qiladi va kirill tovar nomlari chekda koreys/xitoy harflariga
+#: aylanadi. FS «.» shu rejimni o'chiradi; CJK'ni bilmaydigan printer bu
+#: buyruqni e'tiborsiz qoldiradi — zarari yo'q.
+CANCEL_CJK = b"\x1c\x2e"
+#: Xalqaro belgilar to'plami — АҚШ (ESC R 0). Ba'zi printerlarda boshqa
+#: to'plam yoqilgan bo'lsa «#», «$» kabi belgilar boshqacha chiqadi.
+INTL_USA = ESC + b"R\x00"
 #: Qog'ozni qisman kesish (GS V 66 0) — ko'p printerlar tushunadi
 CUT = GS + b"V\x42\x00"
 #: Kesishdan oldin qog'oz chiqarish uchun bo'sh qatorlar
@@ -136,6 +148,31 @@ def _center_txt(text: str, w: int) -> str:
     return text.center(w)[:w]
 
 
+def _printer_settings() -> tuple[int, str]:
+    """(kod sahifasi raqami, kodlash) — config.json'dan. Standart: 17/cp866.
+
+    Printer boshqa kod sahifasini kutsa, kassani qayta yig'masdan
+    config.json'da `printer_codepage` va `printer_encoding` ni o'zgartirish
+    kifoya.
+    """
+    try:
+        from .config import load
+
+        cfg = load()
+        page = int(getattr(cfg, "printer_codepage", 17) or 17)
+        enc = str(getattr(cfg, "printer_encoding", "") or "cp866")
+    except Exception:  # noqa: BLE001 — chop etish hech qachon yiqilmasin
+        return 17, "cp866"
+    return page & 0xFF, enc
+
+
+def head_bytes() -> bytes:
+    """Har chekdan oldingi sozlash: boshlang'ich holat → CJK rejimini
+    o'chirish → xalqaro to'plam → kod sahifasi."""
+    page, _ = _printer_settings()
+    return INIT + CANCEL_CJK + INTL_USA + ESC + b"t" + bytes([page])
+
+
 def _print_sale_raw(text: str, printer: str, paper: str, width: int) -> None:  # pragma: no cover
     """RAW ESC/POS: logo + matn + oq-qora rahmat bar."""
     name = printer or default_printer()
@@ -144,7 +181,7 @@ def _print_sale_raw(text: str, printer: str, paper: str, width: int) -> None:  #
 
     autumn = _autumn_bytes(paper)
     logo = _logo_bytes(paper)
-    head = INIT
+    head = head_bytes()
     if autumn or logo:
         head += ALIGN_CENTER
         if autumn:
@@ -161,10 +198,7 @@ def _print_sale_raw(text: str, printer: str, paper: str, width: int) -> None:  #
     else:
         thanks_block = b"\n" + _thank_you_bar(width)
 
-    data = (
-        head + CODEPAGE_866 + _encode(text)
-        + thanks_block + FEED + CUT
-    )
+    data = head + _encode(text) + thanks_block + FEED + CUT
 
     handle = win32print.OpenPrinter(name)
     try:
@@ -198,7 +232,11 @@ def _encode(text: str) -> bytes:
     """Chek matnini printer tushunadigan baytlarga o'giradi (PC866)."""
     for bad, good in _PUNCT.items():
         text = text.replace(bad, good)
-    return text.replace("\n", "\r\n").encode("cp866", errors="replace")
+    _, enc = _printer_settings()
+    try:
+        return text.replace("\n", "\r\n").encode(enc, errors="replace")
+    except LookupError:      # config.json'da noto'g'ri kodlash yozilgan
+        return text.replace("\n", "\r\n").encode("cp866", errors="replace")
 
 
 def archive_dir() -> Path:
@@ -285,7 +323,7 @@ def _print_raw(text: str, printer: str) -> None:  # pragma: no cover
     if not name:
         raise RuntimeError("Printer tanlanmagan va asosiy printer ham yo'q")
 
-    data = INIT + CODEPAGE_866 + _encode(text) + FEED + CUT
+    data = head_bytes() + _encode(text) + FEED + CUT
 
     handle = win32print.OpenPrinter(name)
     try:
