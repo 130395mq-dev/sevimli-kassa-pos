@@ -154,15 +154,24 @@ rem --- 4) Yangi versiyani ochamiz
 timeout /t 2 /nobreak >nul
 start "" "%EXE%"
 
-rem --- 5) Sog'liq tekshiruvi: 20 s ichida FLAG paydo bo'lsa — muvaffaqiyat
+rem --- 5) Sog'liq tekshiruvi: 90 s ichida FLAG paydo bo'lsa — muvaffaqiyat.
+rem     Ilgari 20 s edi va sekin monoblokda (yoki antivirus yangi 50 MB
+rem     faylni tekshirayotganda) yetmasdi: skript «yiqildi» deb hisoblab
+rem     ikkinchi nusxani ochib yuborardi (2026-09-19).
 set /a m=0
 :health
 timeout /t 1 /nobreak >nul
 if exist "%FLAG%" goto ok
 set /a m+=1
-if %m% lss 20 goto health
+if %m% lss 90 goto health
 
-rem --- Yangi versiya ishga tushmadi -> ROLLBACK: zaxiradan tiklaymiz
+rem --- Bayroq yo'q. Lekin dastur ishlab turgan bo'lsa — u shunchaki
+rem     sekin ochilgan. Bunday holda ROLLBACK QILMAYMIZ va, eng muhimi,
+rem     ikkinchi nusxani OCHMAYMIZ.
+tasklist /FI "IMAGENAME eq SevimliKassa.exe" | find /I "SevimliKassa.exe" >nul
+if not errorlevel 1 goto ok
+
+rem --- Yangi versiya haqiqatan ishga tushmadi -> ROLLBACK: zaxiradan tiklaymiz
 robocopy "%BACKUP%" "%TARGET%" /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >nul
 start "" "%EXE%"
 
