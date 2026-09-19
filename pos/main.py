@@ -114,6 +114,16 @@ def main() -> int:
     # bundan keyin Windows'ga kirganda o'zi ochiladi.
     installer.ensure_autostart()
 
+    # Bitta kompyuterda — bitta nusxa. Kassir dastur ochilishini kutmay
+    # yana bossa, ikkinchi nusxa ochilmaydi: birinchisining oynasi
+    # oldinga chiqadi va bu nusxa jimgina yopiladi. Ikki nusxa bitta
+    # kassa.db ga yozsa smena holati chalkashadi (2026-09-19).
+    from . import single
+    if not single.acquire():
+        logger.info("Kassa allaqachon ochiq — ikkinchi nusxa yopilmoqda")
+        single.raise_existing_window()
+        return EXIT_OK
+
     # Sog'liq bayrog'i: shu nuqtaga yetdik — exe ochildi va Python yuklandi.
     # Yangilash skripti shu bayroqni kutadi; paydo bo'lmasa rollback qiladi.
     from . import updater as _upd
