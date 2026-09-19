@@ -231,27 +231,38 @@ class OpenShiftDialog(BaseDialog):
         return self.name.strip(), int(self.typed_cash or 0) * 100
 
 
-class CloseShiftDialog(NumberDialog):
-    """Smena yopish: kassir sanagan naqd pul.
+class CloseShiftDialog(BaseDialog):
+    """Smena yopish — tasdiq oynasi.
 
-    «Bo'lishi kerak» summasi ataylab ko'rsatilmaydi. Kassir avval
-    sanaydi, keyin kiritadi — aks holda tayyor raqamni ko'chirib
-    yozish vasvasasi bo'ladi va nazoratning ma'nosi qolmaydi.
+    Kassir pulni SANAMAYDI: xaltaga solib beradi, do'kon egasi keyin
+    chekka qarab sanaydi. Shuning uchun bu yerda raqam so'ralmaydi —
+    ilgari so'ralardi va kassirlar har safar razmen raqamini (100 000)
+    yozib, chekdagi «FARQ» qatorini ma'nosiz qilib qo'yardi. Chekda
+    endi «TOPSHIRILADIGAN PUL» raqami chiqadi.
     """
 
     def __init__(self, pending: int = 0, parent=None):
-        hint = tr("Kassadagi naqd pulni sanang va kiriting.")
+        super().__init__(tr("Smenani yopish"), parent=parent)
+        text = tr("Smena yopilsinmi?")
+        note = tr("Chek chiqadi — unda kassadan olinadigan pul yoziladi.")
         if pending:
-            hint += (
+            note += (
                 f"\n\nDiqqat: {pending} ta chek hali serverga yetib bormagan. "
                 "Smena baribir yopiladi, cheklar navbatda qoladi."
             )
-        super().__init__(tr("Smenani yopish"), hint=hint, ok_text="YOPISH",
-                         parent=parent)
+        big = _label(text, 20, t.INK, bold=True)
+        big.setAlignment(Qt.AlignCenter)
+        self.root.addWidget(big)
+        hint = _label(note, 14, t.MUTED)
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignCenter)
+        self.root.addWidget(hint)
+        self.buttons("YOPISH")
 
     @property
     def counted(self) -> int | None:
-        return self.tiyin
+        """Kassir sanamaydi — server uchun har doim None."""
+        return None
 
 
 class OpeningCashDialog(NumberDialog):
