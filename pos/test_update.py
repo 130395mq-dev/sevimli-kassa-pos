@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -175,3 +177,99 @@ class InstallerTest(unittest.TestCase):
         self.assertEqual(Config().base, DEFAULT_SERVER.rstrip("/"))
         self.assertFalse(Config().is_ready)          # token yo'q
         self.assertTrue(Config(token="x").is_ready)  # faqat token yetarli
+
+
+class UpdateScriptSafetyTest(unittest.TestCase):
+    """Yangilash skripti ikkinchi nusxani ochib yubormasin.
+
+    2026-09-19: skript yangi versiya ishga tushganini 20 soniya kutardi.
+    Sekin monoblokda (yoki antivirus yangi 50 MB faylni tekshirayotganda)
+    bu yetmasdi — skript «yiqildi» deb zaxiradan tiklab, yana bitta nusxa
+    ochardi. Natijada kassada 2-3 nusxa ishlab turardi.
+    """
+
+    def script(self) -> str:
+        from . import updater
+
+        return updater._BAT
+
+    def test_kutish_vaqti_uzaytirilgan(self):
+        self.assertIn("if %m% lss 90 goto health", self.script())
+        self.assertNotIn("if %m% lss 20 goto health", self.script())
+
+    def test_dastur_ishlab_tursa_rollback_qilmaydi(self):
+        bat = self.script()
+        self.assertIn("tasklist", bat)
+        guard = bat.index("tasklist")
+        rollback = bat.index('robocopy "%BACKUP%"')
+        # Tekshiruv rollbackdan OLDIN turishi shart
+        self.assertLess(guard, rollback)
+
+    def test_rollback_faqat_bir_marta_ochadi(self):
+        # «start» ikki joyda: muvaffaqiyatli yangilanishdan keyin va
+        # rollbackdan keyin. Uchinchisi bo'lsa — xato.
+        self.assertEqual(self.script().count('start "" "%EXE%"'), 2)
+
+
+class SingleInstanceTest(unittest.TestCase):
+    """Bitta kompyuterda bitta nusxa."""
+
+    def setUp(self):
+        import tempfile
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.env = mock.patch.dict(os.environ, {"APPDATA": self.tmp.name})
+        self.env.start()
+
+    def tearDown(self):
+        from . import single
+
+        single.release()
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def test_birinchi_nusxa_qulfni_oladi(self):
+        from . import single
+
+        self.assertTrue(single.acquire("sinov-kassa"))
+
+    def test_ikkinchi_jarayon_qulfni_ololmaydi(self):
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        from . import single
+
+        self.assertTrue(single.acquire("sinov-kassa"))
+        root = str(Path(__file__).resolve().parent.parent)
+        code = (
+            "import sys; sys.path.insert(0, %r);"
+            "from pos import single;"
+            "print('OK' if single.acquire('sinov-kassa') else 'BAND')" % root
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True,
+            env={**os.environ, "APPDATA": self.tmp.name},
+        )
+        self.assertEqual(out.stdout.strip(), "BAND", out.stderr)
+
+    def test_boshatilsa_qayta_olinadi(self):
+        from . import single
+
+        self.assertTrue(single.acquire("sinov-kassa"))
+        single.release()
+        self.assertTrue(single.acquire("sinov-kassa"))
+
+    def test_xato_bolsa_dastur_toxtamaydi(self):
+        """Qulf ishlamasa ham kassa ochilishi kerak."""
+        from . import single
+
+        with mock.patch.object(single, "_acquire_posix", side_effect=OSError("yo'q")):
+            with mock.patch.object(single, "_acquire_windows", side_effect=OSError("yo'q")):
+                self.assertTrue(single.acquire("sinov-kassa"))
+
+    def test_oynani_chiqarish_windowssiz_xato_bermaydi(self):
+        from . import single
+
+        self.assertFalse(single.raise_existing_window())
+
