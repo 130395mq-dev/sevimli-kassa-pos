@@ -229,3 +229,46 @@ class LoginScreenKeyboardTest(unittest.TestCase):
         s.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Tab, Qt.NoModifier, "\t"))
         s.keyPressEvent(QKeyEvent(QEvent.KeyPress, ord("1"), Qt.NoModifier, "1"))
         self.assertEqual(s.values["parol"], "1")
+
+
+class CloseShiftDialogTest(unittest.TestCase):
+    """Smena yopishda pul soni SO'RALMAYDI.
+
+    Kassir pulni sanamaydi — xaltaga solib beradi, egasi chekka qarab
+    sanaydi. Ilgari raqam so'ralardi va kassirlar har safar razmen
+    raqamini yozib qo'yardi.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def dialog(self, pending=0):
+        from .ui.dialogs import CloseShiftDialog
+
+        return CloseShiftDialog(pending)
+
+    def test_raqam_soralmaydi(self):
+        from .ui.keypad import Keypad
+
+        d = self.dialog()
+        self.assertEqual(d.findChildren(Keypad), [])
+        self.assertIsNone(d.counted)
+
+    def labels(self, dialog) -> str:
+        from PySide6.QtWidgets import QLabel
+
+        return " ".join(x.text() for x in dialog.findChildren(QLabel))
+
+    def test_tasdiq_matni_bor(self):
+        d = self.dialog()
+        text = self.labels(d)
+        self.assertIn("Smena yopilsinmi?", text)
+        self.assertNotIn("sanang", text)
+
+    def test_yuborilmagan_chek_haqida_ogohlantiradi(self):
+        d = self.dialog(3)
+        self.assertIn("3 ta chek", self.labels(d))
+        self.assertIsNone(d.counted)
