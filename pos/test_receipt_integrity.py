@@ -53,6 +53,11 @@ class ReceiptIntegrityTest(unittest.TestCase):
         self.assertEqual(payload['items'][0]['quantity'], '1')
 
     def test_cash_retry_survives_restart_with_same_uuid(self):
+        """Internet yo'q — amal navbatда qoladi va O'SHA uuid bilan ketadi.
+
+        Kassir uchun to'siq yo'q: xato ko'rsatilmaydi, smena ham
+        yopilaveradi. Bir xil uuid tufayli server ikki marta yozmaydi.
+        """
         calls = []
         class CashHub:
             def cash(self, **payload):
@@ -61,14 +66,40 @@ class ReceiptIntegrityTest(unittest.TestCase):
                     raise HubConnError('response lost')
                 return {'id': 42, 'duplicate': True}
         backend = LiveBackend(CashHub(), self.store, METHODS)
-        with self.assertRaises(HubConnError):
-            backend.cash('out', 1000000)
+        self.assertTrue(backend.cash('out', 1000000)['offline'])
+        self.assertEqual(self.store.pending_cash_for_tag(''), 1)
+        # Dastur qayta ishga tushsa ham navbat diskda qoladi
         self.store.close()
         self.store = Store(self.path)
         backend = LiveBackend(CashHub(), self.store, METHODS)
-        self.assertEqual(backend.cash('out', 1000000)['id'], 42)
-        self.assertEqual(calls[0], calls[1])
+        self.assertEqual(backend.flush_cash(), 1)
+        self.assertEqual(calls[0]['local_uuid'], calls[1]['local_uuid'])
+        self.assertEqual(self.store.pending_cash_for_tag(''), 0)
+
+    def test_old_stuck_cash_operation_is_adopted(self):
+        """1.17.17 gacha tiqilib qolgan amal yangilangach o'zi ketadi."""
+        self.store.set('pending_cash_operation', json.dumps(
+            {'kind': 'out', 'amount': 500000, 'comment': '',
+             'local_uuid': 'eski-uuid', 'shift_id': None}))
+        sent = []
+        class CashHub:
+            def cash(self, **payload):
+                sent.append(payload)
+                return {'id': 7}
+        backend = LiveBackend(CashHub(), self.store, METHODS)
+        self.assertEqual(backend.flush_cash(), 1)
+        self.assertEqual(sent[0]['local_uuid'], 'eski-uuid')
         self.assertFalse(self.store.get('pending_cash_operation'))
+
+    def test_rejected_cash_operation_does_not_block_the_queue(self):
+        class CashHub:
+            def cash(self, **payload):
+                raise HubError('Ochiq smena yo\'q')
+        backend = LiveBackend(CashHub(), self.store, METHODS)
+        with self.assertRaises(HubError):
+            backend.cash('in', 1000)
+        # Navbatda qolmaydi — aks holda har flushда takrorlanardi
+        self.assertEqual(self.store.pending_cash_for_tag(''), 0)
 
     def test_offline_receipt_becomes_official_after_delivery(self):
         hub = FakeHub(online=False)
