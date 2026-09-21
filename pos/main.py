@@ -773,14 +773,17 @@ def main() -> int:
         if not amount:
             return
         try:
-            backend.cash(kind, amount)
+            result = backend.cash(kind, amount)
         except HubError as e:
             QMessageBox.warning(None, tr("Saqlanmadi"), str(e))
             return
-        window.flash(
-            f"Kassaga {amount // 100} so'm kiritildi" if kind == "in"
-            else f"Kassadan {amount // 100} so'm chiqarildi"
-        )
+        done = (f"Kassaga {amount // 100} so'm kiritildi" if kind == "in"
+                else f"Kassadan {amount // 100} so'm chiqarildi")
+        # Internet yo'q bo'lsa amal navbatда qoladi — kassir buni bilsin,
+        # lekin ishi to'xtamaydi (smena ham yopiladi).
+        if isinstance(result, dict) and result.get("offline"):
+            done += " · internet qaytganda serverga ketadi"
+        window.flash(done)
 
     def park_cart() -> None:
         """Chekni chetga qo'yadi — mijoz biror narsani unutgan bo'lsa."""
@@ -1096,34 +1099,58 @@ def main() -> int:
         flush_now.set()   # fon oqimi darhol yuboradi
 
     def close_shift() -> None:
-        from . import printer
-        if store.get("pending_cash_operation"):
-            QMessageBox.warning(window, tr("Smena yopilmadi"), "Pul kiritish/chiqarish amali hali tasdiqlanmagan. Avval shu amalni qayta yuboring.")
-            return
+        from datetime import datetime, timezone
 
-        # Yopishdan oldin navbatni bo'shatishga urinamiz — chek to'liq
-        # bo'lsin. Bo'lmasa ham yopamiz, kassirni kutdirmaymiz.
+        from shared.receipt import render as render_shift
+
+        from . import printer
+        from .smena import build_shift_receipt, offline_banner
+
+        # Yopishdan oldin navbatni bo'shatishga urinamiz — internet bo'lsa
+        # hisobotni server chizadi va raqam bitta joyda hisoblanadi.
         try:
             backend.flush()
         except Exception:
             pass
 
-        pending = store.unsent_count()
-        if pending:
-            QMessageBox.warning(window, tr("Smena yopilmadi"),
-                f"{pending} ta chek hali serverga yetmagan. Cheklar tarixida xato sababini tekshiring. "
-                "Cheklar yuborilgach smenani yoping.\n" + store.queue_error())
-            return
-        dialog = CloseShiftDialog(pending, window)
+        # Internet yo'qligi endi to'siq emas: chek kassaning o'zida turadi,
+        # demak hisobot to'liq chiqadi. Faqat server RAD ETGAN cheklar
+        # haqida ogohlantiramiz — ular haqiqatan ham muammo.
+        stuck = store.stuck_count()
+        dialog = CloseShiftDialog(stuck, window)
         if dialog.exec() != CloseShiftDialog.Accepted:
             return
 
+        # Internetsiz yopilsa shu matn chop etiladi. Serverга ulanib
+        # bo'lsa server chizgan matn ishlatiladi — ikkisi bir xil
+        # formulalar bilan hisoblanadi.
+        sh = session.get("shift") or {}
+        width = config.receipt_width
+        local_text = offline_banner(
+            render_shift(
+                build_shift_receipt(
+                    store, backend.methods,
+                    market=info.get("market", "Sevimli Market"),
+                    point=info.get("point", ""),
+                    register=(info.get("register") or {}).get("name", ""),
+                    cashier=sh.get("cashier", ""),
+                    shift_no=sh.get("number") or "—",
+                    opened_at=sh.get("opened_at", ""),
+                    closed_at=datetime.now(timezone.utc).isoformat(),
+                    opening_cash=sh.get("opening_cash", 0),
+                    shift_tag=store.get("history_shift_tag") or "",
+                ),
+                width,
+            ),
+            width,
+        )
+
         try:
-            result = hub.close_shift(dialog.counted)
+            result = backend.close_shift(dialog.counted, local_text)
         except HubError as e:
             QMessageBox.critical(
                 None, tr("Smena yopilmadi"),
-                f"{e}\n\nInternet yo'q bo'lsa, ulanish tiklangach qayta urinib ko'ring.",
+                f"{e}\n\nSabab tuzatilgach qayta urinib ko'ring.",
             )
             return
 
