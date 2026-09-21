@@ -1146,7 +1146,7 @@ def main() -> int:
         )
 
         try:
-            result = backend.close_shift(dialog.counted, local_text)
+            result = backend.finish_shift(dialog.counted, local_text)
         except HubError as e:
             QMessageBox.critical(
                 None, tr("Smena yopilmadi"),
