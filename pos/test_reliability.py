@@ -454,7 +454,7 @@ class OfflineShiftDayTest(unittest.TestCase):
 
     def test_close_offline_then_sync_in_the_evening(self):
         _, tag = self._offline_day()
-        result = self.backend.close_shift(None, local_text="MAHALLIY HISOBOT")
+        result = self.backend.finish_shift(None, local_text="MAHALLIY HISOBOT")
         self.assertTrue(result["offline"])
         self.assertEqual(result["receipt_text"], "MAHALLIY HISOBOT")
         self.assertEqual(len(self.store.closed_shifts()), 1)
@@ -478,7 +478,7 @@ class OfflineShiftDayTest(unittest.TestCase):
     def test_shift_closes_before_the_next_one_opens(self):
         """Ikki kun internetsiz: smenalar serverda aralashib ketmasin."""
         _, tag1 = self._offline_day()
-        self.backend.close_shift(None, local_text="1")
+        self.backend.finish_shift(None, local_text="1")
         # Ertasiga yana internetsiz ochildi
         self.backend.open_shift({"id": 3, "name": "Kassir"}, 100_000_00)
         self.store.set("history_shift_tag",
@@ -502,7 +502,7 @@ class OfflineShiftDayTest(unittest.TestCase):
         self.backend.open_shift({"id": 3, "name": "Kassir"}, 100_000_00)
         self.assertEqual(self.store.get("active_shift_id"), "101")
         self.hub.online = False
-        self.backend.close_shift(None, local_text="MAHALLIY")
+        self.backend.finish_shift(None, local_text="MAHALLIY")
         record = self.store.closed_shifts()[0]
         self.assertEqual(record["server_id"], 101)
 
@@ -510,3 +510,33 @@ class OfflineShiftDayTest(unittest.TestCase):
         self.backend.flush()
         self.assertEqual(len(self.hub.closed), 1)
         self.assertEqual(len(self.hub.opened), 1)   # qayta ochilmadi
+
+
+class BackendNameCollisionTest(unittest.TestCase):
+    """Oyna `backend.close_shift = <tugma funksiyasi>` deb biriktiradi.
+
+    1.18.0 da LiveBackend'ga xuddi shu nomli usul qo'shilib, tugma
+    funksiyasi o'zini-o'zi chaqirib qolgan va smena yopilmay qolgan edi.
+    Bu nom endi backend'da BO'LMASLIGI kerak.
+    """
+
+    def test_backend_has_no_close_shift_method(self):
+        self.assertFalse(hasattr(LiveBackend, "close_shift"))
+        self.assertTrue(hasattr(LiveBackend, "finish_shift"))
+
+    def test_window_override_does_not_break_finish_shift(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            store = Store(Path(tmp.name) / "kassa.db")
+            hub = OfflineHub()
+            backend = LiveBackend(hub, store, METHODS)
+            calls = []
+            backend.close_shift = lambda: calls.append("ui")   # oyna qiladi
+            hub.online = True
+            backend.open_shift({"id": 1, "name": "K"}, 0)
+            result = backend.finish_shift(None, local_text="x")
+            self.assertEqual(result["receipt_text"], "SERVER HISOBOTI")
+            self.assertEqual(calls, [])
+            store.close()
+        finally:
+            tmp.cleanup()
