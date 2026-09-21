@@ -288,16 +288,30 @@ class Hub:
             },
         )
 
-    def close_shift(self, counted_cash: int | None) -> dict:
-        return self._call("POST", "shift/close", {"counted_cash": counted_cash})
+    def close_shift(self, counted_cash: int | None, closed_at: str = "",
+                    local_uuid: str = "") -> dict:
+        """Smenani yopadi.
+
+        `closed_at` — internetsiz yopilgan smena uchun HAQIQIY yopilish
+        vaqti; bo'sh bo'lsa server hozirgi vaqtni qo'yadi. `local_uuid`
+        qaysi smena yopilayotganini aniqlaydi (takror yuborishda xato
+        smena yopilib qolmasligi uchun).
+        """
+        return self._call("POST", "shift/close", {
+            "counted_cash": counted_cash,
+            "closed_at": closed_at,
+            "local_uuid": local_uuid,
+        })
 
     def shift_report(self) -> dict:
         return self._call("GET", "shift/report")
 
-    def cash(self, kind: str, amount: int, comment: str = "", local_uuid: str = "", shift_id=None) -> dict:
+    def cash(self, kind: str, amount: int, comment: str = "", local_uuid: str = "",
+             shift_id=None, created_at: str = "") -> dict:
         return self._call(
             "POST", "cash", {"kind": kind, "amount": amount, "comment": comment,
-                             "local_uuid": local_uuid or str(uuid.uuid4()), "shift_id": shift_id}
+                             "local_uuid": local_uuid or str(uuid.uuid4()),
+                             "shift_id": shift_id, "created_at": created_at}
         )
 
     def send_sale(self, payload: dict) -> dict:
@@ -694,23 +708,83 @@ class LiveBackend:
         return sales
 
     def cash(self, kind: str, amount: int, comment: str = "") -> dict:
-        pending = self.store.get("pending_cash_operation")
-        payload = json.loads(pending) if pending else None
-        if payload and (payload["kind"], payload["amount"], payload["comment"]) != (kind, amount, comment):
-            raise HubError(f"Oldingi pul amali tasdiqlanmagan: {payload['amount'] // 100} so'm ({payload['kind']}). Avval shu amalni qayta yuboring.")
-        if not payload:
-            payload = {"kind": kind, "amount": amount, "comment": comment,
-                       "local_uuid": str(uuid.uuid4()),
-                       "shift_id": self.store.get("active_shift_id") or None}
-            self.store.set("pending_cash_operation", json.dumps(payload))
+        """Kassaga pul kiritish / kassadan chiqarish.
+
+        Chek bilan bir xil yo'l: avval diskka, keyin serverga. Internet
+        yo'q bo'lsa amal navbatda qoladi — kassir ishini davom ettiradi va
+        smenani ham yopa oladi. Ulanish tiklanganda amal o'z smenasiga
+        yoziladi (`local_uuid` tufayli ikki marta yozilmaydi).
+
+        Ilgari amal faqat serverга yuborilardi va tarmoq uzilsa
+        «tasdiqlanmagan» bayrog'i qolib, smena umuman yopilmay qolardi.
+        """
+        self._adopt_stuck_cash()
+        local_uuid = str(uuid.uuid4())
+        created_at = datetime.now(timezone.utc).isoformat()
+        payload = {
+            "kind": kind, "amount": int(amount), "comment": comment,
+            "local_uuid": local_uuid, "created_at": created_at,
+            "shift_id": self.store.get("active_shift_id") or None,
+        }
+        self.store.queue_cash(local_uuid, payload, created_at)
         try:
             result = self.hub.cash(**payload)
-        except HubError as exc:
-            if getattr(exc, "status", None) in (400, 401, 403):
-                self.store.set("pending_cash_operation", "")
+        except HubConnError as e:
+            # Internet yo'q — navbatда qoladi, xato ko'rsatilmaydi.
+            self.store.note_cash_error(local_uuid, str(e))
+            return {"queued": True, "offline": True}
+        except HubError as e:
+            # Server RAD etdi (masalan ochiq smena yo'q) — qayta urinmaymiz,
+            # aks holda navbat to'silib qolardi. Kassir xatoni ko'radi.
+            self.store.discard_cash(local_uuid, str(e))
             raise
-        self.store.set("pending_cash_operation", "")
+        self.store.mark_cash_sent(local_uuid)
         return result
+
+    def _adopt_stuck_cash(self) -> None:
+        """Eski usulda tiqilib qolgan pul amalini navbatга ko'chiradi.
+
+        1.17.17 gacha tarmoq uzilsa `pending_cash_operation` bayrog'i
+        o'chmay qolardi va smena yopilmasdi. Yangilangan kassa shu
+        amalni navbatга olib, bayroqni tozalaydi — eski tiqilish o'zi
+        yechiladi.
+        """
+        raw = self.store.get("pending_cash_operation")
+        if not raw:
+            return
+        try:
+            old = json.loads(raw)
+        except (ValueError, TypeError):
+            self.store.set("pending_cash_operation", "")
+            return
+        key = str(old.get("local_uuid") or uuid.uuid4())
+        old.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+        self.store.queue_cash(key, old, old["created_at"])
+        self.store.set("pending_cash_operation", "")
+        logger.info("Tiqilib qolgan pul amali navbatga ko'chirildi: %s", key)
+
+    def flush_cash(self) -> int:
+        """Navbatdagi pul amallarini yuboradi. Yuborilgan sonini qaytaradi.
+
+        Cheklardan KEYIN, smenani yopishdan OLDIN chaqiriladi — shunda
+        amal o'zining ochiq smenasiga tushadi.
+        """
+        self._adopt_stuck_cash()
+        sent = 0
+        for row in self.store.pending_cash():
+            payload = json.loads(row["payload"])
+            try:
+                self.hub.cash(**payload)
+            except HubConnError as e:
+                self.store.note_cash_error(row["local_uuid"], str(e))
+                break          # internet yo'q — qolganini ham urinmaymiz
+            except HubError as e:
+                self.store.discard_cash(row["local_uuid"], str(e))
+                logger.warning("Pul amali rad etildi: %s", e)
+                continue
+            self.store.mark_cash_sent(row["local_uuid"])
+            sent += 1
+        return sent
 
     # ---------------------------------------------------- smena (oflayn ham)
 
@@ -766,8 +840,17 @@ class LiveBackend:
         smena bo'ladi. Muvaffaqiyatli bo'lsa serverdagi smena dict'ini
         qaytaradi (oyna raqamni yangilashi mumkin), aks holda None.
         """
+        if self.store.closed_shifts():
+            # Oldingi smena hali serverda yopilmagan — yangisini ochsak
+            # server uni eski smena deb qaytarardi.
+            return None
         local = self.store.get_local_shift()
         if not local:
+            return None
+        if local.get("server_id") or not local.get("local_uuid"):
+            # Serverда allaqachon bor (yoki onlayn ochilgan) — bu yerda
+            # ish yo'q. Yopilishi kutilayotgan bo'lsa `sync_shift_close`
+            # navbatlar bo'shagach yopadi.
             return None
         try:
             sh = self.hub.open_shift(
@@ -784,13 +867,137 @@ class LiveBackend:
             # SAQLAB qolamiz — sozlama tuzatilгач o'zi sinxronlanadi.
             logger.warning("Smena sinxronlanmadi (server rad etdi): %s", e)
             return None
-        # Serverga ochildi — endi mahalliy belgini olib tashlaymiz.
-        # Navbatdagi cheklar shu ochiq smenaga tushadi.
+        # Serverga ochildi. Navbatdagi cheklar shu ochiq smenaga tushadi.
         self.store.set("active_shift_id", str(sh["id"]))
-        self.store.set_local_shift(None)
+        if local.get("closed_at"):
+            # Smena internetsiz YOPILGAN ham edi — belgini saqlaymiz,
+            # cheklar va pul amallari ketgandan keyin serverда yopamiz.
+            local["server_id"] = sh["id"]
+            self.store.set_local_shift(local)
+        else:
+            self.store.set_local_shift(None)
         logger.info("Internetsiz ochilgan smena serverга sinxronlandi: #%s",
                     sh.get("number"))
         return sh
+
+    # ------------------------------------------------ smenani yopish
+
+    def mark_shift_closed(self, closed_at: str, counted_cash=None) -> None:
+        """Smenani MAHALLIY yopiq deb belgilaydi (internet yo'q paytda).
+
+        Yopilgan smena alohida navbatga tushadi — kassir keyingi smenani
+        ocha oladi, oldingisi esa internet qaytganda o'z vaqti bilan
+        serverda yopiladi.
+
+        Onlayn ochilgan smena uchun ham ishlaydi: o'shanda mahalliy yozuv
+        yo'q edi, shu yerda server id si bilan yaratiladi.
+        """
+        local = self.store.get_local_shift()
+        if not local:
+            server_id = self.store.get("active_shift_id")
+            local = {
+                "local_uuid": "",
+                "server_id": int(server_id) if server_id else None,
+                "opened_at": "",
+                "opening_cash": 0,
+            }
+        local["closed_at"] = closed_at
+        local["counted_cash"] = counted_cash
+        local["shift_tag"] = self.store.get("history_shift_tag") or ""
+        self.store.add_closed_shift(local)
+        self.store.set_local_shift(None)
+
+    def sync_shifts(self) -> None:
+        """Smenalarni server bilan moslaydi — QAT'IY TARTIBDA.
+
+        Avval internetsiz yopilgan smenalar (eng eskisidan): serverda
+        ochiladi, cheklari ketguncha kutiladi, keyin yopiladi. Shundan
+        keyingina yangi smena ochiladi.
+
+        Tartib muhim: serverda bir kassada bitta ochiq smena bo'ladi.
+        Yangi smenani oldingisi yopilmasdan ochsak, server uni eski ochiq
+        smena deb qaytaradi va ikkalasining cheklari aralashib ketardi.
+        """
+        for record in list(self.store.closed_shifts()):
+            if not self._sync_one_closed(record):
+                return          # internet yo'q yoki cheklari hali ketmagan
+        self.sync_shift()
+
+    def _sync_one_closed(self, record: dict) -> bool:
+        """Bitta yopilgan smenani serverga o'tkazadi. Tugasa True."""
+        if record.get("local_uuid") and not record.get("server_id"):
+            try:
+                sh = self.hub.open_shift(
+                    record.get("cashier_id", 0),
+                    int(record.get("opening_cash") or 0),
+                    local_uuid=record["local_uuid"],
+                    opened_at=record.get("opened_at", ""),
+                )["shift"]
+            except HubConnError:
+                return False
+            except HubError as e:
+                logger.warning("Yopilgan smena ochilmadi: %s", e)
+                return False
+            record["server_id"] = sh["id"]
+            self.store.set("active_shift_id", str(sh["id"]))
+            self._save_closed(record)
+
+        # Cheklari va pul amallari ketmaguncha yopmaymiz — aks holda
+        # serverdagi hisobot kassadagidan kam chiqadi.
+        tag = record.get("shift_tag", "")
+        if tag and (self.store.pending_for_tag(tag)
+                    or self.store.pending_cash_for_tag(tag)):
+            return False
+
+        try:
+            self.hub.close_shift(
+                record.get("counted_cash"),
+                closed_at=record.get("closed_at", ""),
+                local_uuid=record.get("local_uuid", ""),
+            )
+        except HubConnError:
+            return False
+        except HubError as e:
+            # Masalan «allaqachon yopilgan» — qayta urinishning ma'nosi
+            # yo'q, navbatdan chiqaramiz (aks holda har flushda takrorlanardi).
+            logger.warning("Smena serverda yopilmadi: %s", e)
+        self._drop_closed(record)
+        if self.store.get("active_shift_id") == str(record.get("server_id") or ""):
+            self.store.set("active_shift_id", "")
+        logger.info("Internetsiz yopilgan smena serverga sinxronlandi")
+        return True
+
+    def _save_closed(self, record: dict) -> None:
+        items = self.store.closed_shifts()
+        for i, item in enumerate(items):
+            if item.get("closed_at") == record.get("closed_at"):
+                items[i] = record
+                break
+        self.store.set_closed_shifts(items)
+
+    def _drop_closed(self, record: dict) -> None:
+        items = [i for i in self.store.closed_shifts()
+                 if i.get("closed_at") != record.get("closed_at")]
+        self.store.set_closed_shifts(items)
+
+    def close_shift(self, counted_cash, local_text: str | None = None) -> dict:
+        """Smenani yopadi. Internet bo'lsa serverда, bo'lmasa mahalliy.
+
+        `local_text` — internetsiz holat uchun tayyor hisobot matni. Uni
+        oyna chizadi (chek kengligi va do'kon nomi o'shanda), bu yer
+        faqat qaysi yo'ldan borishni hal qiladi.
+        """
+        try:
+            return self.hub.close_shift(counted_cash)
+        except HubConnError as e:
+            if local_text is None:
+                raise
+            logger.info("Smena internetsiz yopilyapti (server yo'q: %s)", e)
+        # Server RAD etgan bo'lsa (oddiy HubError) bu yerга yetib kelmaymiz —
+        # kassirga sabab ko'rsatiladi. Faqat tarmoq uzilganda mahalliy yopamiz.
+        closed_at = datetime.now(timezone.utc).isoformat()
+        self.mark_shift_closed(closed_at, counted_cash)
+        return {"receipt_text": local_text, "offline": True, "closed_at": closed_at}
 
     def discard_empty_receipts(self) -> int:
         """Eski bo'sh yozuvlarni ham ko'radi; tarmoq va retry limitiga bog'liq emas."""
@@ -814,7 +1021,7 @@ class LiveBackend:
         # pending() retry limiti tugagan yozuvlarni olmaydi. Ular ham
         # unsent_count() orqali smenani yopishga to'sqinlik qilishi mumkin.
         self.discard_empty_receipts()
-        self.sync_shift()
+        self.sync_shifts()
         sent = 0
         for row in self.store.pending(limit):
             # Shu chek hozir `submit` ichida yuborilyapti — tegmaymiz.
@@ -849,6 +1056,9 @@ class LiveBackend:
                 official = resp.get("receipt_number") if isinstance(resp, dict) else None
                 self.store.mark_sent(row["local_uuid"], check_no, official)
                 sent += 1
+        # Cheklardan keyin pul amallari (smena hali ochiq), keyin yopish.
+        self.flush_cash()
+        self.sync_shifts()
         return sent
 
     def sync_catalog(self, force: bool = False, progress=None) -> int:
