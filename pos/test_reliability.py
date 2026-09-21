@@ -324,3 +324,189 @@ class SubmitFlushRaceTest(unittest.TestCase):
         from pos import hub as hubmod
         self.assertNotIn("u2", hubmod._INFLIGHT)
         self.assertEqual(self.store.pending_count(), 1)   # navbatda qoldi, fon yuboradi
+
+
+# ---------------------------------------------- internetsiz kun (smena)
+
+METHODS = [{"code": "naqd", "name": "Naqd", "is_cash": True},
+           {"code": "uzcard", "name": "UzCard", "is_cash": False}]
+
+
+def _sale(uuid_: str, *, cash: int = 0, card: int = 0, tag: str,
+          shift_uuid: str = "") -> dict:
+    pays = []
+    if cash:
+        pays.append({"method": "naqd", "amount": cash})
+    if card:
+        pays.append({"method": "uzcard", "amount": card})
+    return {
+        "local_uuid": uuid_,
+        "shift_local_uuid": shift_uuid,
+        "gross_total": cash + card,
+        "discount_total": 0,
+        "points_spent": 0,
+        "points_earned": 0,
+        "items": [{"product_id": 1, "name": "Non", "quantity": "1",
+                   "price": cash + card, "total": cash + card}],
+        "payments": pays,
+    }
+
+
+class OfflineHub:
+    """Internet uzilishini taqlid qiladi. `online=False` — tarmoq yo'q."""
+
+    def __init__(self):
+        self.online = False
+        self.opened = []
+        self.closed = []
+        self.cash_ops = []
+        self.sales = []
+        self.events = []          # ketma-ketlikni tekshirish uchun
+        self._next_id = 100
+
+    def _check(self):
+        if not self.online:
+            raise HubConnError("internet yo'q")
+
+    def open_shift(self, cashier_id, opening_cash, local_uuid="", opened_at=""):
+        self._check()
+        self._next_id += 1
+        self.opened.append({"local_uuid": local_uuid, "opened_at": opened_at})
+        self.events.append(("open", local_uuid))
+        return {"shift": {"id": self._next_id, "number": len(self.opened),
+                          "cashier": "Kassir", "opened_at": opened_at,
+                          "opening_cash": opening_cash,
+                          "next_receipt_number": 1}}
+
+    def close_shift(self, counted_cash, closed_at="", local_uuid=""):
+        self._check()
+        self.closed.append({"closed_at": closed_at, "local_uuid": local_uuid})
+        self.events.append(("close", local_uuid))
+        return {"receipt_text": "SERVER HISOBOTI"}
+
+    def cash(self, **payload):
+        self._check()
+        self.cash_ops.append(payload)
+        return {"id": len(self.cash_ops)}
+
+    def send_sale(self, payload):
+        self._check()
+        self.sales.append(payload)
+        return {"id": len(self.sales), "receipt_number": str(1000 + len(self.sales))}
+
+
+class OfflineShiftDayTest(unittest.TestCase):
+    """Kun bo'yi internet yo'q, kechqurun keldi — hammasi joyiga tushsin."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name) / "kassa.db")
+        self.hub = OfflineHub()
+        self.backend = LiveBackend(self.hub, self.store, METHODS)
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def _offline_day(self):
+        """Smenani internetsiz ochadi, sotadi, pul chiqaradi."""
+        shift = self.backend.open_shift({"id": 3, "name": "Kassir"}, 100_000_00)
+        tag = "loc:" + self.store.get_local_shift()["local_uuid"]
+        self.store.set("history_shift_tag", tag)
+        self.backend.submit = None  # to'g'ridan-to'g'ri navbatga yozamiz
+        for i, (cash, card) in enumerate([(50_000_00, 0), (0, 30_000_00),
+                                          (20_000_00, 0)]):
+            uid = f"chek-{i}"
+            self.store.queue(uid, _sale(uid, cash=cash, card=card, tag=tag,
+                                        shift_uuid=self.store.get_local_shift()["local_uuid"]),
+                             f"2026-09-21T1{i}:00:00+00:00")
+        self.backend.cash("out", 10_000_00)
+        return shift, tag
+
+    def test_shift_opens_without_internet(self):
+        shift, _ = self._offline_day()
+        self.assertIsNone(shift["id"])
+        self.assertEqual(shift["number"], "—")
+        self.assertTrue(self.store.get_local_shift()["offline"])
+
+    def test_cash_move_does_not_block_anything(self):
+        self._offline_day()
+        # Eski xatti-harakat: bayroq qolib, smena yopilmay qolardi
+        self.assertFalse(self.store.get("pending_cash_operation"))
+
+    def test_local_report_counts_everything(self):
+        from pos.smena import build_shift_receipt
+        _, tag = self._offline_day()
+        r = build_shift_receipt(
+            self.store, METHODS, market="Sevimli", point="Shahar",
+            register="Kassa-1", cashier="Kassir", shift_no="—",
+            opened_at="2026-09-21T08:00:00+00:00",
+            closed_at="2026-09-21T20:00:00+00:00",
+            opening_cash=100_000_00, shift_tag=tag)
+        self.assertEqual(r.receipts_count, 3)
+        self.assertEqual(r.gross_total, 100_000_00)
+        self.assertEqual(r.cash_total, 70_000_00)
+        self.assertEqual(r.cashless_total, 30_000_00)
+        self.assertEqual(r.cash_out, 10_000_00)
+        # Razmen + naqd savdo - chiqarilgan
+        self.assertEqual(r.expected_cash, 160_000_00)
+        self.assertEqual(r.to_hand_over, 60_000_00)
+
+    def test_close_offline_then_sync_in_the_evening(self):
+        _, tag = self._offline_day()
+        result = self.backend.close_shift(None, local_text="MAHALLIY HISOBOT")
+        self.assertTrue(result["offline"])
+        self.assertEqual(result["receipt_text"], "MAHALLIY HISOBOT")
+        self.assertEqual(len(self.store.closed_shifts()), 1)
+
+        # --- kechqurun internet keldi
+        self.hub.online = True
+        for _ in range(4):           # bir necha fon aylanishi
+            self.backend.flush()
+
+        self.assertEqual(len(self.hub.opened), 1)
+        self.assertEqual(len(self.hub.sales), 3)
+        self.assertEqual(len(self.hub.cash_ops), 1)
+        self.assertEqual(len(self.hub.closed), 1)
+        # Smena O'Z vaqti bilan yopildi, ulanish tiklangan vaqt bilan emas
+        self.assertEqual(self.hub.closed[0]["closed_at"], result["closed_at"])
+        # Navbat bo'sh, mahalliy belgilar tozalandi
+        self.assertEqual(self.store.closed_shifts(), [])
+        self.assertIsNone(self.store.get_local_shift())
+        self.assertEqual(self.store.unsent_count(), 0)
+
+    def test_shift_closes_before_the_next_one_opens(self):
+        """Ikki kun internetsiz: smenalar serverda aralashib ketmasin."""
+        _, tag1 = self._offline_day()
+        self.backend.close_shift(None, local_text="1")
+        # Ertasiga yana internetsiz ochildi
+        self.backend.open_shift({"id": 3, "name": "Kassir"}, 100_000_00)
+        self.store.set("history_shift_tag",
+                       "loc:" + self.store.get_local_shift()["local_uuid"])
+        self.assertIsNotNone(self.store.get_local_shift())
+
+        self.hub.online = True
+        for _ in range(4):
+            self.backend.flush()
+        self.assertEqual(len(self.hub.closed), 1)
+        self.assertEqual(len(self.hub.opened), 2)
+        # ENG MUHIMI: eski smena yangisidan OLDIN yopilgan bo'lsin.
+        # Aks holda server yangi smena deb eskisini qaytarib yuborardi.
+        kinds = [kind for kind, _ in self.hub.events]
+        self.assertEqual(kinds, ["open", "close", "open"])
+        self.assertEqual(self.store.closed_shifts(), [])
+
+    def test_online_shift_closed_offline_syncs_too(self):
+        """Smena onlayn ochilgan, kunduzi internet uzildi, oqshom yopildi."""
+        self.hub.online = True
+        self.backend.open_shift({"id": 3, "name": "Kassir"}, 100_000_00)
+        self.assertEqual(self.store.get("active_shift_id"), "101")
+        self.hub.online = False
+        self.backend.close_shift(None, local_text="MAHALLIY")
+        record = self.store.closed_shifts()[0]
+        self.assertEqual(record["server_id"], 101)
+
+        self.hub.online = True
+        self.backend.flush()
+        self.assertEqual(len(self.hub.closed), 1)
+        self.assertEqual(len(self.hub.opened), 1)   # qayta ochilmadi
