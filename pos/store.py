@@ -81,6 +81,18 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Kassaga pul kiritish/chiqarish. Chek kabi: avval diskka, keyin serverga.
+-- Internet yo'q paytda ham amal yo'qolmaydi va smena yopilishini to'smaydi.
+CREATE TABLE IF NOT EXISTS cash_outbox (
+    local_uuid TEXT PRIMARY KEY,
+    payload    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    sent       INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    shift_tag  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS cash_pending ON cash_outbox(sent, created_at);
 """
 
 
@@ -530,6 +542,97 @@ class Store:
         )
 
     # ------------------------------------------- internetsiz ochilgan smena
+
+    # ------------------------------------------------ pul kiritish/chiqarish
+
+    def queue_cash(self, local_uuid: str, payload: dict, created_at: str) -> None:
+        """Pul amalini navbatga qo'yadi (chek bilan bir xil yo'l)."""
+        self.db.execute(
+            "INSERT OR IGNORE INTO cash_outbox"
+            " (local_uuid, payload, created_at, shift_tag) VALUES (?, ?, ?, ?)",
+            (local_uuid, json.dumps(payload, ensure_ascii=False), created_at,
+             self.get("history_shift_tag") or ""),
+        )
+
+    def pending_cash(self) -> list[sqlite3.Row]:
+        return self.db.execute(
+            "SELECT * FROM cash_outbox WHERE sent = 0 ORDER BY created_at"
+        ).fetchall()
+
+    def mark_cash_sent(self, local_uuid: str) -> None:
+        self.db.execute(
+            "UPDATE cash_outbox SET sent = 1, last_error = '' WHERE local_uuid = ?",
+            (local_uuid,),
+        )
+
+    def note_cash_error(self, local_uuid: str, error: str) -> None:
+        """Xato yozib qo'yamiz, lekin navbatdan chiqarmaymiz."""
+        self.db.execute(
+            "UPDATE cash_outbox SET last_error = ? WHERE local_uuid = ?",
+            (error[:400], local_uuid),
+        )
+
+    def discard_cash(self, local_uuid: str, error: str = "") -> None:
+        """Server rad etdi — qayta urinmaymiz (aks holda navbat to'siladi)."""
+        self.db.execute(
+            "UPDATE cash_outbox SET sent = 2, last_error = ? WHERE local_uuid = ?",
+            (error[:400], local_uuid),
+        )
+
+    def shift_cash(self, shift_tag: str) -> list[dict]:
+        """Shu smenadagi pul amallari (yuborilgani ham, navbatdagisi ham).
+
+        Smena yakunini kassaning o'zi hisoblaganda kerak: kiritilgan va
+        chiqarilgan pul internetdan qat'i nazar hisobga olinishi kerak.
+        """
+        rows = self.db.execute(
+            "SELECT payload FROM cash_outbox WHERE shift_tag = ? AND sent != 2"
+            " ORDER BY created_at",
+            (shift_tag,),
+        ).fetchall()
+        return [json.loads(r["payload"]) for r in rows]
+
+    def pending_for_tag(self, shift_tag: str) -> int:
+        """Shu smenaning hali yuborilmagan cheklari soni."""
+        return self.db.execute(
+            "SELECT COUNT(*) FROM outbox WHERE sent = 0 AND attempts < ?"
+            " AND shift_tag = ?",
+            (self.MAX_ATTEMPTS, shift_tag),
+        ).fetchone()[0]
+
+    def pending_cash_for_tag(self, shift_tag: str) -> int:
+        """Shu smenaning hali yuborilmagan pul amallari soni."""
+        return self.db.execute(
+            "SELECT COUNT(*) FROM cash_outbox WHERE sent = 0 AND shift_tag = ?",
+            (shift_tag,),
+        ).fetchone()[0]
+
+    # -------------------------------------- internetsiz yopilgan smenalar
+
+    def closed_shifts(self) -> list[dict]:
+        """Mahalliy yopilgan, lekin serverga hali yetmagan smenalar.
+
+        Ro'yxat — chunki internet uzoq yo'q bo'lsa kassir bir nechta
+        smenani yopib ulgurishi mumkin. Tartib saqlanadi: eng eskisi
+        birinchi bo'lib sinxronlanadi, aks holda serverda smenalar
+        aralashib ketardi.
+        """
+        raw = self.get("closed_shifts")
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+        return data if isinstance(data, list) else []
+
+    def set_closed_shifts(self, items: list[dict]) -> None:
+        self.set("closed_shifts", json.dumps(items, ensure_ascii=False))
+
+    def add_closed_shift(self, record: dict) -> None:
+        items = self.closed_shifts()
+        items.append(record)
+        self.set_closed_shifts(items)
 
     def set_local_shift(self, data: dict | None) -> None:
         """Internetsiz ochilgan smenani saqlaydi (yoki tozalaydi).
