@@ -980,8 +980,13 @@ class LiveBackend:
                  if i.get("closed_at") != record.get("closed_at")]
         self.store.set_closed_shifts(items)
 
-    def close_shift(self, counted_cash, local_text: str | None = None) -> dict:
+    def finish_shift(self, counted_cash, local_text: str | None = None) -> dict:
         """Smenani yopadi. Internet bo'lsa serverда, bo'lmasa mahalliy.
+
+        Nomi `close_shift` EMAS — o'sha nomni oyna o'zining tugma
+        funksiyasi uchun ishlatadi (`backend.close_shift = close_shift`,
+        pos/main.py). 1.18.0 da ikkalasi to'qnashib, yopish tugmasi
+        jimgina ishlamay qolgan edi.
 
         `local_text` — internetsiz holat uchun tayyor hisobot matni. Uni
         oyna chizadi (chek kengligi va do'kon nomi o'shanda), bu yer
