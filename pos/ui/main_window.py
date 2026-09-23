@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
+    QScroller,
     QSizePolicy,
     QStackedWidget,
     QStyle,
@@ -145,11 +146,16 @@ class _WrapLabel(QLabel):
 
 # Nozik skrollbar — o'q tugmalari, burchak qutichasi va gorizontal bar
 # ko'rinmaydi. Sensorli ekranда chiroyliroq va toza.
+# Skrollbar BARMOQ uchun: 9 px li shaffof chiziqni sensorli ekranda
+# ushlab bo'lmasdi (2026-09-23, egasi: «pastga-tepaga tortadigan joyini
+# to'g'irla»). Endi 20 px, ko'rinadigan yo'lak va dastak.
 _SCROLLBAR_QSS = """
-QScrollBar:vertical { background: transparent; width: 9px; margin: 3px 2px; }
-QScrollBar::handle:vertical { background: rgba(80,110,94,0.28);
-    border-radius: 4px; min-height: 48px; }
-QScrollBar::handle:vertical:hover { background: rgba(80,110,94,0.48); }
+QScrollBar:vertical { background: rgba(80,110,94,0.10); width: 20px;
+    margin: 4px 3px; border-radius: 7px; }
+QScrollBar::handle:vertical { background: rgba(80,110,94,0.45);
+    border-radius: 7px; min-height: 64px; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:vertical:pressed {
+    background: rgba(24,114,79,0.75); }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0; background: transparent; border: none; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
@@ -237,17 +243,19 @@ class _CatalogDelegate(QStyledItemDelegate):
     UNIT = Qt.UserRole + 5
     STOCK = Qt.UserRole + 6
 
-    # Karta o'lchamlari — rasmsiz, ixcham. Nom uchun 4 qatorgacha joy bor.
-    CARD_W, CARD_H = 174, 134
-    MARGIN = 5           # karta atrofidagi bo'sh joy (grid katak ichida)
+    # Karta o'lchamlari — rasmsiz, ixcham. Nom uchun 3 qatorgacha joy bor.
+    # 174×134 dan 156×116 ga kichraytirildi (2026-09-23, egasining
+    # so'rovi): bir ekranga ko'proq tovar sig'adi, chek paneliga joy ochildi.
+    CARD_W, CARD_H = 156, 116
+    MARGIN = 4           # karta atrofidagi bo'sh joy (grid katak ichida)
     STAR_BOX = 24        # yuqori-o'ngdagi yulduzcha zonasi
     RAD = 10             # burchak radiusi (avvalgidan kichikroq)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._name_font = QFont(); self._name_font.setPixelSize(14); self._name_font.setBold(True)
-        self._price_font = QFont(); self._price_font.setPixelSize(19); self._price_font.setBold(True)
-        self._unit_font = QFont(); self._unit_font.setPixelSize(11)
+        self._name_font = QFont(); self._name_font.setPixelSize(13); self._name_font.setBold(True)
+        self._price_font = QFont(); self._price_font.setPixelSize(17); self._price_font.setBold(True)
+        self._unit_font = QFont(); self._unit_font.setPixelSize(10)
         self._tag_font = QFont(); self._tag_font.setPixelSize(10); self._tag_font.setBold(True)
         self._tag_text = tr("yo'q")
 
@@ -295,7 +303,7 @@ class _CatalogDelegate(QStyledItemDelegate):
         painter.drawLine(card.left() + rad, card.top() + 1,
                          card.right() - rad, card.top() + 1)
 
-        pad = 9
+        pad = 8
         inner_l = card.left() + pad
         inner_w = card.width() - 2 * pad
 
@@ -305,26 +313,26 @@ class _CatalogDelegate(QStyledItemDelegate):
         sp = icons.pixmap("star", 15, t.WARN if fav else t.FAINT, fill=fav)
         painter.drawPixmap(star.center().x() - 7, star.center().y() - 7, sp)
 
-        # Nom — TO'LIQ (4 qatorgacha). 1-qator yulduzcha uchun torroq.
+        # Nom — TO'LIQ (3 qatorgacha). 1-qator yulduzcha uchun torroq.
         fm = QFontMetrics(self._name_font)
         painter.setFont(self._name_font)
         painter.setPen(QColor(t.INK))
-        name_rect = QRect(inner_l, card.top() + 7, inner_w,
-                          card.bottom() - 40 - (card.top() + 7))
+        name_rect = QRect(inner_l, card.top() + 6, inner_w,
+                          card.bottom() - 38 - (card.top() + 6))
         self._draw_name(painter, name_rect, name, fm,
-                        first_w=inner_w - (self.STAR_BOX - 4), max_lines=4)
+                        first_w=inner_w - (self.STAR_BOX - 4), max_lines=3)
 
         # Narx — pastda-chapда, urg'uli, OCH ZUMRAD
         painter.setFont(self._price_font)
         painter.setPen(QColor(t.PRICE))
-        price_rect = QRect(inner_l, card.bottom() - 26, inner_w - 4, 20)
+        price_rect = QRect(inner_l, card.bottom() - 24, inner_w - 4, 18)
         painter.drawText(price_rect, Qt.AlignLeft | Qt.AlignVCenter, price)
 
         # Birlik + qoldiq — narx tepasида, muted
         if unit or stock:
             painter.setFont(self._unit_font)
             painter.setPen(QColor(t.MUTED))
-            meta = QRect(inner_l, card.bottom() - 42, inner_w, 14)
+            meta = QRect(inner_l, card.bottom() - 38, inner_w, 13)
             mfm = QFontMetrics(self._unit_font)
             txt = "  ·  ".join(x for x in (unit, stock) if x)
             painter.drawText(meta, Qt.AlignLeft | Qt.AlignVCenter,
@@ -392,9 +400,15 @@ class MainWindow(QMainWindow):
     sale_finished = Signal()
     price_type_clicked = Signal()
 
-    def __init__(self, backend, parent=None, animated_bg: bool = True):
+    def __init__(self, backend, parent=None, animated_bg: bool = True,
+                 receipt_width: int | None = None):
         super().__init__(parent)
         self.backend = backend
+        # Chek paneli kengligi — ekranga qarab (4:3 kassa ekranida torroq,
+        # keng ekranda 500). Sinov/preview aniq qiymat beradi.
+        if receipt_width is None:
+            receipt_width = t.receipt_width(self._screen_width())
+        self.receipt_width = receipt_width
         #: main.py o'rnatadi — savdo tugagach mijoz chekini chiqaradi.
         self.print_sale = None
         self.cart = Cart()
@@ -455,6 +469,16 @@ class MainWindow(QMainWindow):
         self._shortcuts()
         self.refresh()
         self.scan_input.setFocus()
+
+    @staticmethod
+    def _screen_width() -> int:
+        """Asosiy ekranning bo'sh kengligi (mantiqiy px); topilmasa keng deb olinadi."""
+        try:
+            from PySide6.QtGui import QGuiApplication
+            screen = QGuiApplication.primaryScreen()
+            return screen.availableGeometry().width() if screen else 10_000
+        except Exception:  # noqa: BLE001
+            return 10_000
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -582,6 +606,11 @@ class MainWindow(QMainWindow):
         # balki «sevimli» qilib belgilaymiz. Buni bosishни viewport'da
         # ushlab, kerak bo'lsa yutamiz (itemClicked chaqirilmaydi).
         self.catalog_list.viewport().installEventFilter(self)
+        # Barmoq bilan surib skroll qilish (sensorli ekran). Bosish
+        # (tap) avvalgidek tovar qo'shadi — surish esa endi tovar
+        # qo'shmaydi, ro'yxatni siljitadi. Sichqoncha bilan ham ishlaydi.
+        QScroller.grabGesture(self.catalog_list.viewport(),
+                              QScroller.LeftMouseButtonGesture)
         col.addWidget(self.catalog_list, 1)
 
         # Ulanish holati — kichkina, lekin doim ko'rinadi.
@@ -606,7 +635,7 @@ class MainWindow(QMainWindow):
 
     def _receipt_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setFixedWidth(t.RECEIPT_WIDTH)
+        panel.setFixedWidth(self.receipt_width)
         panel.setObjectName("receiptPanel")
         panel.setStyleSheet(f"QWidget#receiptPanel {{ background: {t.BG}; border-radius: {t.RADIUS}px; }}")
         col = QVBoxLayout(panel)
@@ -1125,7 +1154,8 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _row_widget(title: str, subtitle: str, amount: str,
-                    amount_size: int = 15, low_stock: bool = False) -> QWidget:
+                    amount_size: int = 17, low_stock: bool = False,
+                    panel_w: int = t.RECEIPT_WIDTH) -> QWidget:
         """Ikki ustunli qator: chapda nom, o'ngda summa.
 
         Summalar bir ustunda tursin — kassir ularni ko'z bilan
@@ -1136,7 +1166,7 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(w)
         # Bo'shliq qator vidjetining ichida — QListWidget'ning padding'i
         # setItemWidget bilan qo'yilgan vidjetga ta'sir qilmaydi
-        row.setContentsMargins(18, 9, 22, 9)
+        row.setContentsMargins(18, 10, 22, 10)
         row.setSpacing(12)
 
         # Summa ustuni — qat'iy kenglik, doim o'ngda ko'rinadi
@@ -1149,24 +1179,24 @@ class MainWindow(QMainWindow):
         # Nomga qolgan joy: panel kengligi − chetlar − summa − skrollbar.
         # Nom shu joyga sig'adi (2 qatorgacha, keyin «…») — hech qachon
         # qatorni kengaytirib summani ekrandan chiqarib yubormaydi.
-        name_w = t.RECEIPT_WIDTH - 18 - 22 - 12 - value_w - 10
+        name_w = panel_w - 18 - 22 - 12 - value_w - 10
         left = QVBoxLayout()
         left.setSpacing(2)
-        name = _WrapLabel(title, 16, t.INK, bold=True, max_lines=2)
+        name = _WrapLabel(title, 18, t.INK, bold=True, max_lines=2)
         name_h = name.set_height_for(name_w)
         left.addWidget(name)
         sub_h = 0
         if subtitle:
             # Qoldiq nol bo'lsa — rangi o'zgaradi. Sotib bo'lmaydi degani
             # emas, lekin kassir buni ko'rib turishi kerak.
-            sub = _WrapLabel(subtitle, 12, t.DANGER if low_stock else t.MUTED, max_lines=1)
+            sub = _WrapLabel(subtitle, 13, t.DANGER if low_stock else t.MUTED, max_lines=1)
             sub_h = sub.set_height_for(name_w) + 2
             left.addWidget(sub)
         row.addLayout(left, 1)
         row.addWidget(value)
 
-        # Qator balandligi: matnga qarab, lekin barmoq uchun 58 dan kam emas
-        w.setMinimumHeight(max(58, 9 + name_h + sub_h + 9))
+        # Qator balandligi: matnga qarab, lekin barmoq uchun 64 dan kam emas
+        w.setMinimumHeight(max(64, 10 + name_h + sub_h + 10))
         return w
 
     def _add_row(self, listw: QListWidget, widget: QWidget, data=None) -> None:
@@ -1256,6 +1286,7 @@ class MainWindow(QMainWindow):
                 f"{idx + 1}.  {line.product.name}",
                 f"{qty_str(line.quantity)}{unit} × {som(line.product.price)}",
                 som(line.net(extra)),
+                panel_w=self.receipt_width,
             )
             self._add_row(self.receipt_list, widget, data=idx)
 
