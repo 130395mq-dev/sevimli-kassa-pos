@@ -160,20 +160,86 @@ class SplitDialogTest(unittest.TestCase):
         self.assertEqual(dlg.change, 80)
         self.assertEqual(sum(p.amount for p in dlg.parts), self.KILOLI)
 
-    def test_qolganini_dan_keyin_terish_aniq_summani_bekor_qiladi(self):
+    def test_qolganini_vergul_bilan_yozadi_va_tahrirlanadi(self):
         dlg = self.dialog(self.KILOLI)
         dlg.put_rest()
-        self.assertEqual(dlg.typed["naqd"], "16001")
-        self.assertEqual(dlg.exact["naqd"], self.KILOLI)
-        dlg.on_backspace()
-        self.assertIsNone(dlg.exact["naqd"])
-        self.assertEqual(dlg.typed["naqd"], "1600")
+        self.assertEqual(dlg.typed["naqd"], "16001,20")
+        self.assertEqual(dlg.status_title.text(), "HAMMASI YOPILDI")
+        dlg.on_backspace()                       # "16001,2" — baribir 20 tiyin
+        self.assertEqual(dlg.status_title.text(), "HAMMASI YOPILDI")
+        dlg.on_backspace()                       # "16001," — 20 tiyin yetmaydi
+        self.assertEqual(dlg.typed["naqd"], "16001,")
         self.assertEqual(dlg.status_title.text(), "QOLDI")
-        dlg.put_rest()
-        self.assertEqual(dlg.exact["naqd"], self.KILOLI)
+        self.assertEqual(dlg.status_value.text(), "0,20")
         dlg.on_clear()
-        self.assertIsNone(dlg.exact["naqd"])
         self.assertEqual(dlg.typed["naqd"], "")
+        dlg.select("click")
+        dlg.put_rest()
+        self.assertEqual(dlg.typed["click"], "16001,20")
+        self.assertEqual(dlg.rows["click"].amount_label.text().replace("\u00a0", " "), "16 001,20")
+
+    # ---------------------------------- vergul: tiyinli summani qo'lda terish
+
+    def test_vergul_bilan_tiyin_teriladi(self):
+        dlg = self.dialog(self.KILOLI)
+        dlg.select("uzcard")
+        self.type_(dlg, "10000")
+        dlg.select("naqd")
+        self.type_(dlg, "6001")
+        dlg.on_comma()
+        self.type_(dlg, "20")
+        self.assertEqual(dlg.typed["naqd"], "6001,20")
+        self.assertEqual(dlg.status_title.text(), "HAMMASI YOPILDI")
+        self.assertTrue(dlg.finish.isEnabled())
+        dlg._finish()
+        self.assertEqual([(p.method, p.amount) for p in dlg.parts],
+                         [("naqd", 600_120), ("uzcard", 1_000_000)])
+
+    def test_vergul_qoidalari(self):
+        dlg = self.dialog(self.KILOLI)
+        dlg.on_comma()                           # bo'sh joyga vergul → "0,"
+        self.assertEqual(dlg.typed["naqd"], "0,")
+        dlg.on_comma()                           # ikkinchi vergul e'tiborsiz
+        self.assertEqual(dlg.typed["naqd"], "0,")
+        self.type_(dlg, "5")                     # "0,5" = 50 tiyin
+        self.assertEqual(dlg.entries()[0].amount, 50)
+        self.type_(dlg, "07")                    # 2 raqamdan ortig'i olinmaydi
+        self.assertEqual(dlg.typed["naqd"], "0,50")
+        dlg.on_clear()
+        self.type_(dlg, "6001")
+        dlg.on_digit("000")                      # "000" tugmasi — 6 001 000
+        self.assertEqual(dlg.typed["naqd"], "6001000")
+        dlg.on_clear()
+        self.type_(dlg, "6001")
+        dlg.on_comma()
+        dlg.on_digit("000")                      # verguldan keyin faqat 2 ta
+        self.assertEqual(dlg.typed["naqd"], "6001,00")
+        self.assertEqual(dlg.entries()[0].amount, 600_100)
+
+    def test_tiyin_matn_aylantirish(self):
+        from .ui.split_payment import SplitPaymentDialog as D
+        self.assertEqual(D.to_tiyin("6001"), 600_100)
+        self.assertEqual(D.to_tiyin("6001,2"), 600_120)
+        self.assertEqual(D.to_tiyin("6001,20"), 600_120)
+        self.assertEqual(D.to_tiyin("6001,"), 600_100)
+        self.assertEqual(D.to_tiyin(",5"), 50)
+        self.assertEqual(D.to_tiyin(""), 0)
+        self.assertEqual(D.to_tiyin(","), 0)
+        self.assertEqual(D.to_tiyin("abc"), 0)
+        self.assertEqual(D.to_text(600_120), "6001,20")
+        self.assertEqual(D.to_text(600_100), "6001")
+        self.assertEqual(D.to_text(5), "0,05")
+        self.assertEqual(D.to_text(0), "0")
+
+    def test_klaviaturada_vergul_bor(self):
+        from .ui.keypad import Keypad
+        from PySide6.QtWidgets import QPushButton
+        pad = Keypad(with_comma=True)
+        labels = [b.text() for b in pad.findChildren(QPushButton)]
+        self.assertIn(",", labels)
+        self.assertIn("000", labels)
+        plain = Keypad()
+        self.assertNotIn(",", [b.text() for b in plain.findChildren(QPushButton)])
 
     def test_butun_chekda_hech_narsa_ozgarmadi(self):
         dlg = self.dialog(200_000_00)
