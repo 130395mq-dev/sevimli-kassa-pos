@@ -10,10 +10,11 @@ tanlangan qatorga hali yopilmagan summani qo'yadi. Pastda «Qoldi» yoki
 
 Hisob-kitob `cart.split_payment` da — bu fayl faqat chizadi.
 
-Vaznli tovar bo'lsa chek tiyinli chiqadi (16 001,20 so'm), kassir esa
-faqat butun so'm teradi. Shuning uchun «QOLGANINI» summani tiyinigacha
-aniq qo'yadi, «Qoldi»/«Qaytim» esa tiyinni yashirmaydi — aks holda
-«QOLDI 0» deb turib YAKUNLASH yonmas edi.
+Vaznli tovar bo'lsa chek tiyinli chiqadi (16 001,20 so'm). Shuning uchun
+bu oynaning klaviaturasida VERGUL bor — kassir 6001,20 deb tera oladi,
+«QOLGANINI» esa qolgan summani tiyinigacha aniq qo'yadi (6001,20).
+«Qoldi»/«Qaytim» tiyinni yashirmaydi — aks holda «QOLDI 0» deb turib
+YAKUNLASH yonmas edi.
 """
 
 from __future__ import annotations
@@ -106,11 +107,9 @@ class SplitPaymentDialog(QDialog):
         self.total = total
         # Naqd birinchi, keyin karta/onlayn — kassir ko'zi o'rganib qolgan tartib
         self.methods = sorted(methods, key=lambda m: 0 if m.get("is_cash") else 1)
-        #: Har qator uchun kiritilgan raqamlar (so'm, matn) — kod bo'yicha
+        #: Har qator uchun terilgan summa (matn, so'm; vergul bilan tiyin:
+        #: "6001,20") — kod bo'yicha
         self.typed: dict[str, str] = {m["code"]: "" for m in self.methods}
-        #: «QOLGANINI» qo'ygan aniq summa (tiyin). Kassir raqam tersa —
-        #: bekor bo'ladi va yana `typed` ishlaydi.
-        self.exact: dict[str, int | None] = {m["code"]: None for m in self.methods}
         self.selected: str = self.methods[0]["code"] if self.methods else ""
         #: Natija — YAKUNLASH bosilganda to'ldiriladi
         self.parts: list[PaymentPart] = []
@@ -169,8 +168,9 @@ class SplitPaymentDialog(QDialog):
         self.rest_btn.clicked.connect(self.put_rest)
         col.addWidget(self.rest_btn)
 
-        keypad = Keypad()
+        keypad = Keypad(with_comma=True)
         keypad.digit.connect(self.on_digit)
+        keypad.comma.connect(self.on_comma)
         keypad.backspace.connect(self.on_backspace)
         keypad.clear.connect(self.on_clear)
         col.addWidget(keypad, 1)
@@ -221,16 +221,29 @@ class SplitPaymentDialog(QDialog):
 
     # ------------------------------------------------------------ holat
 
+    @staticmethod
+    def to_tiyin(raw: str) -> int:
+        """Terilgan matn → tiyin: "6001" → 600100, "6001,2" → 600120,
+        "6001,20" → 600120, "0,5" → 50, "" → 0."""
+        whole, _, frac = raw.partition(",")
+        if not (whole.isdigit() or (not whole and frac)):
+            return 0
+        frac = (frac + "00")[:2]
+        if not frac.isdigit():
+            return 0
+        return int(whole or 0) * 100 + int(frac)
+
+    @staticmethod
+    def to_text(tiyin: int) -> str:
+        """Tiyin → teriladigan matn: 600120 → "6001,20", 600100 → "6001"."""
+        whole, frac = divmod(max(tiyin, 0), 100)
+        return f"{whole},{frac:02d}" if frac else str(whole)
+
     def entries(self) -> list[SplitEntry]:
         out = []
         for m in self.methods:
             code = m["code"]
-            exact = self.exact.get(code)
-            if exact is not None:
-                amount = exact
-            else:
-                raw = self.typed.get(code, "")
-                amount = int(raw) * 100 if raw.isdigit() else 0
+            amount = self.to_tiyin(self.typed.get(code, ""))
             out.append(SplitEntry(code, bool(m.get("is_cash")), amount))
         return out
 
@@ -251,36 +264,40 @@ class SplitPaymentDialog(QDialog):
         if not self.selected:
             return
         cur = self.typed.get(self.selected, "")
-        if len(cur) + len(value) <= 9:
-            self.typed[self.selected] = (cur + value).lstrip("0") or "0"
-        self.exact[self.selected] = None
+        whole, comma, frac = cur.partition(",")
+        if comma:
+            # Verguldan keyin ko'pi bilan 2 raqam (tiyin)
+            self.typed[self.selected] = whole + "," + (frac + value)[:2]
+        elif len(whole) + len(value) <= 9:
+            self.typed[self.selected] = (whole + value).lstrip("0") or "0"
+        self.refresh()
+
+    def on_comma(self) -> None:
+        """Vergul — tiyin terish uchun (6001,20). Ikkinchi vergul e'tiborsiz."""
+        if not self.selected:
+            return
+        cur = self.typed.get(self.selected, "")
+        if "," not in cur:
+            self.typed[self.selected] = (cur or "0") + ","
         self.refresh()
 
     def on_backspace(self) -> None:
         if self.selected:
             self.typed[self.selected] = self.typed.get(self.selected, "")[:-1]
-            self.exact[self.selected] = None
         self.refresh()
 
     def on_clear(self) -> None:
         if self.selected:
             self.typed[self.selected] = ""
-            self.exact[self.selected] = None
         self.refresh()
 
     def put_rest(self) -> None:
-        """Tanlangan qatorga hali yopilmagan summani qo'yadi — tiyinigacha."""
+        """Tanlangan qatorga hali yopilmagan summani qo'yadi — tiyinigacha
+        (16 001,20 so'mlik chekni 16 001 deb qo'ysak 20 tiyin ochiq qolardi)."""
         if not self.selected:
             return
         rest = self.total - self._other_sum(self.selected)
-        if rest > 0:
-            # Butun so'm ekranda (`typed`), aniq summa hisobda (`exact`):
-            # 16 001,20 so'mlik chekni 16 001 deb qo'ysak 20 tiyin ochiq qolardi.
-            self.typed[self.selected] = str(rest // 100)
-            self.exact[self.selected] = rest
-        else:
-            self.typed[self.selected] = ""
-            self.exact[self.selected] = None
+        self.typed[self.selected] = self.to_text(rest) if rest > 0 else ""
         self.refresh()
 
     def _finish(self) -> None:
@@ -328,6 +345,8 @@ class SplitPaymentDialog(QDialog):
             self.reject()
         elif Qt.Key_0 <= key <= Qt.Key_9:
             self.on_digit(chr(key))
+        elif key in (Qt.Key_Comma, Qt.Key_Period):
+            self.on_comma()
         elif key == Qt.Key_Backspace:
             self.on_backspace()
         else:
