@@ -22,6 +22,19 @@ def som(tiyin: int, *, sep: str = THIN) -> str:
     return sign + f"{abs(value):,}".replace(",", sep)
 
 
+def som_exact(tiyin: int, *, sep: str = THIN) -> str:
+    """Tiyini bo'lsa ko'rsatadi: 1600120 → '16 001,20', 1600000 → '16 000'.
+
+    Vaznli tovarda chek 16 001,20 so'm chiqishi mumkin. Odatda tiyin
+    yashiriladi (`som`), lekin to'lovni tiyinigacha yopish kerak bo'lgan
+    joyda kassir «QOLDI 0» degan bema'ni yozuvni ko'rmasligi kerak.
+    """
+    sign = "-" if tiyin < 0 else ""
+    whole, rest = divmod(abs(tiyin), 100)
+    body = f"{whole:,}".replace(",", sep)
+    return sign + body + (f",{rest:02d}" if rest else "")
+
+
 def qty_str(quantity: Decimal) -> str:
     """Miqdor: butun bo'lsa '2', kasr bo'lsa '0.750'."""
     q = Decimal(quantity)
