@@ -731,6 +731,29 @@ class HistoryNumberTest(unittest.TestCase):
         self.assertEqual(dlg.list.count(), 3)
         dlg.deleteLater()
 
+    def test_tarix_oynasi_kassa_ekraniga_sigadi(self):
+        """Tarix oynasi 1366×768 ekranga sig'sin — «Qayta chop etish»
+        tugmasi ekran ostiga tushib ketmasin (2026-09-23)."""
+        import os
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from .ui.dialogs import HistoryDialog
+
+        app = QApplication.instance() or QApplication([])
+        rows = [
+            {"check_no": 100 + i, "time": f"10:{i:02d}", "total_text": "3 000",
+             "state": "yuborildi", "is_return": False}
+            for i in range(40)
+        ]
+        dlg = HistoryDialog(rows, shift_caption="Smena #12 · Kassir", on_reprint=None)
+        dlg.adjustSize()
+        # 1366×768 @125% da bo'sh joy ~576 px; @100% da ~720 px
+        self.assertLessEqual(dlg.sizeHint().height(), 560)
+        self.assertLessEqual(dlg.minimumSizeHint().height(), 560)
+        self.assertLessEqual(dlg.minimumSizeHint().width(), 1000)
+        self.assertTrue(dlg.reprint.isVisibleTo(dlg))
+        dlg.deleteLater()
+
     def test_tarixdan_asl_chek_qayta_chiziladi(self):
         from .history import render_history_sale
 
