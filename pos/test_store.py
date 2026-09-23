@@ -89,6 +89,63 @@ class StoreTest(unittest.TestCase):
         self.store.toggle_favorite(p.id)
         self.assertEqual(len(self.store.search("")), 1)
 
+    def test_qidiruv_kirill_lotin_katta_kichik(self):
+        """Kassir aniq nomni yozmaydi: lotincha, kichik harf, so'z tartibi."""
+        self.store.replace_products([
+            {"id": 11, "ms_id": "m11", "name": "Сут 1 литр", "code": "", "barcode": "",
+             "price": 12_500_00, "is_weight": False, "plu": None, "tracked": False, "stock": 3},
+            {"id": 12, "ms_id": "m12", "name": "Гўшт мол (вазнли)", "code": "", "barcode": "",
+             "price": 95_000_00, "is_weight": True, "plu": None, "tracked": False, "stock": 3},
+            {"id": 13, "ms_id": "m13", "name": "Coca-Cola 1,5л", "code": "", "barcode": "",
+             "price": 16_000_00, "is_weight": False, "plu": None, "tracked": False, "stock": 3},
+            {"id": 14, "ms_id": "m14", "name": "Qatiq 500 ml", "code": "", "barcode": "",
+             "price": 8_000_00, "is_weight": False, "plu": None, "tracked": False, "stock": 3},
+        ])
+        names = lambda q: [p.name for p in self.store.search(q)]
+        # Kirillcha nom — lotincha so'rov (va aksincha), katta-kichik farqsiz
+        self.assertEqual(names("sut"), ["Сут 1 литр"])
+        self.assertEqual(names("СУТ"), ["Сут 1 литр"])
+        self.assertEqual(names("Сут"), ["Сут 1 литр"])
+        self.assertEqual(names("катик"), ["Qatiq 500 ml"])
+        # So'z tartibi va qismi: "1 lit sut" → «Сут 1 литр»
+        self.assertEqual(names("1 lit sut"), ["Сут 1 литр"])
+        # Apostrof, ў, o'xshash harflar: go'sht / gosht / гўшт — ikkalasi ham
+        # (setUp'dagi "Go'sht mol" ham bor); lotincha nom oldin, keyin kirillcha
+        self.assertEqual(names("go'sht"), ["Go'sht mol", "Гўшт мол (вазнли)"])
+        self.assertEqual(names("gosht mol"), ["Go'sht mol", "Гўшт мол (вазнли)"])
+        self.assertEqual(names("vaznli gosht"), ["Гўшт мол (вазнли)"])
+        self.assertEqual(names("kola"), ["Coca-Cola 1,5л"])
+        self.assertEqual(names("cola 1.5"), ["Coca-Cola 1,5л"])
+        self.assertEqual(names("katik"), ["Qatiq 500 ml"])
+        # Bo'lmagan so'z — topilmaydi; faqat belgi — bo'sh
+        self.assertEqual(names("kefir"), [])
+        self.assertEqual(names("%%"), [])
+        # Kod bo'yicha ham avvalgidek
+        self.assertEqual(names("0007"), ["Go'sht mol"])
+
+    def test_qidiruv_tartibi(self):
+        """Nomi so'rov bilan boshlanganlar oldin turadi."""
+        self.store.replace_products([
+            {"id": 21, "ms_id": "m21", "name": "Qatiq sut aralash", "code": "", "barcode": "",
+             "price": 1_00, "is_weight": False, "plu": None, "tracked": False, "stock": 1},
+            {"id": 22, "ms_id": "m22", "name": "Сут 1 литр", "code": "", "barcode": "",
+             "price": 1_00, "is_weight": False, "plu": None, "tracked": False, "stock": 1},
+            {"id": 23, "ms_id": "m23", "name": "Asut", "code": "", "barcode": "",
+             "price": 1_00, "is_weight": False, "plu": None, "tracked": False, "stock": 1},
+        ])
+        self.assertEqual([p.name for p in self.store.search("sut")],
+                         ["Сут 1 литр", "Qatiq sut aralash", "Asut"])
+
+    def test_qidiruv_kaliti(self):
+        from .qidiruv import key
+        self.assertEqual(key("Гўшт мол (вазнли)"), "gosht mol vaznli")
+        self.assertEqual(key("Go'sht"), "gosht")
+        self.assertEqual(key("Coca-Cola 1,5л"), "koka kola 1.5l")
+        self.assertEqual(key("Xalva"), key("Ҳалва"))
+        self.assertEqual(key("Choy 100 g"), key("Чой 100 г"))
+        self.assertEqual(key("ПЕЧЕНЬЕ Юбилейное"), "pechene yubileynoe")
+        self.assertEqual(key(""), "")
+
     def test_qayta_yuklash_nusxa_yaratmaydi(self):
         self.store.replace_products(PRODUCTS)
         self.assertEqual(self.store.product_count(), 2)
@@ -407,6 +464,8 @@ class PriceTypeTest(unittest.TestCase):
         con.commit(); con.close()
         s = Store(old)
         self.assertEqual(s.search("Eski")[0].price, 100)
+        # Eski bazaga qidiruv kaliti bir marta yoziladi (kichik harf ham topadi)
+        self.assertEqual(s.search("eski")[0].price, 100)
         s.close()
 
 
@@ -717,12 +776,18 @@ class HistoryNumberTest(unittest.TestCase):
              "state": "navbatda", "is_return": False},
         ]
         called = []
-        dlg = HistoryDialog(rows, on_reprint=called.append)
+
+        def on_reprint(row):
+            called.append(row)
+            return "Chek qayta chop etildi"
+
+        dlg = HistoryDialog(rows, on_reprint=on_reprint)
         self.assertEqual(dlg.list.count(), 3)   # boshda hammasi
         dlg.list.setCurrentRow(0)
         self.assertTrue(dlg.reprint.isEnabled())
         dlg._reprint_current()
         self.assertEqual(called[0]["check_no"], 101)
+        self.assertEqual(dlg.note.text(), "Chek qayta chop etildi")   # oynada ko'rinadi
         dlg._type("101")
         self.assertEqual(dlg.list.count(), 1)   # faqat 101
         dlg._type("9")                          # 1019 — mos yo'q
@@ -777,3 +842,61 @@ class HistoryNumberTest(unittest.TestCase):
         self.assertIn("Non", text)
         self.assertIn("3 000 so'm", text)
         self.assertIn("Qaytim", text)
+        self.assertTrue(text.startswith(" ") or text.startswith("NUSXA"))
+        self.assertIn("NUSXA", text.splitlines()[0])   # tepasida nusxa belgisi
+
+    def test_tarix_vaqti_mahalliy(self):
+        """Outbox'da UTC (09:54+00:00) — Toshkentda 14:54 ko'rinsin."""
+        from datetime import timedelta, timezone
+        from .history import local_hhmm, local_when, render_history_sale
+
+        tashkent = timezone(timedelta(hours=5))
+        self.assertEqual(local_hhmm("2026-09-23T09:54:03.123456+00:00", tashkent), "14:54")
+        self.assertEqual(local_hhmm("2026-09-23T09:54:03Z", tashkent), "14:54")
+        # Yarim tundan o'tib ketadigan holat: 22:30 UTC → ertasi 03:30
+        self.assertEqual(local_when("2026-09-23T22:30:00+00:00", tashkent)
+                         .strftime("%d.%m %H:%M"), "24.09 03:30")
+        # Mintaqasiz yozuv o'zgarmaydi, buzuq yozuv yiqitmaydi
+        self.assertEqual(local_hhmm("2026-09-23T10:00:00", tashkent), "10:00")
+        self.assertTrue(local_hhmm("bema'ni", tashkent))
+        text = render_history_sale(
+            {"created_at": "2026-09-23T09:54:03+00:00", "receipt_number": "ОТ-1",
+             "gross_total": 100000, "items": [{"name": "Non", "quantity": "1",
+             "price": 100000, "total": 100000}],
+             "payments": [{"method": "naqd", "amount": 100000}]},
+            market="Sevimli", point="", cashier="Ali", shift_no=7,
+            methods=METHODS, width=48, tz=tashkent,
+        )
+        self.assertIn("23.09.2026 14:54", text)
+        self.assertNotIn("09:54", text)
+
+    def test_qaytarish_cheki_qayta_chiziladi(self):
+        """Tarixdan qaytarish cheki QAYTARISH deb chiqsin, savdo emas."""
+        from datetime import timedelta, timezone
+        from .history import render_history_sale
+
+        payload = {
+            "kind": "return", "origin_id": 55, "origin_number": "ОТ-0208",
+            "receipt_number": "ОТ-0301",
+            "created_at": "2026-09-23T09:54:03+00:00",
+            "gross_total": 300000, "net_total": 300000,
+            "items": [{"name": "Non", "quantity": "1", "price": 300000,
+                       "total": 300000}],
+            "payments": [{"method": "naqd", "amount": 300000}],
+        }
+        text = render_history_sale(
+            payload, market="Sevimli", point="Shahar", cashier="Ali",
+            shift_no=7, methods=METHODS, width=48,
+            tz=timezone(timedelta(hours=5)),
+        )
+        self.assertIn("QAYTARISH CHEKI", text)
+        self.assertIn("NUSXA", text)
+        self.assertIn("ОТ-0301", text)
+        self.assertIn("Asl chek", text)
+        self.assertIn("ОТ-0208", text)
+        self.assertIn("QAYTARILDI", text)
+        self.assertIn("3 000 so'm", text)
+        self.assertIn("Naqd", text)
+        self.assertIn("23.09.2026 14:54", text)
+        self.assertNotIn("JAMI", text)      # savdo cheki emas
+        self.assertNotIn("Qaytim", text)
