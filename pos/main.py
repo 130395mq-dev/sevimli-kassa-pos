@@ -832,7 +832,7 @@ def main() -> int:
         import json as _json
 
         from .money import som
-        from .history import render_history_sale
+        from .history import local_hhmm, render_history_sale
         from . import printer
         from .ui.dialogs import HistoryDialog
 
@@ -852,7 +852,7 @@ def main() -> int:
             rows.append({
                 "check_no": check_no,
                 "receipt_number": payload.get("receipt_number"),
-                "time": r["created_at"][11:16],
+                "time": local_hhmm(r["created_at"]),   # UTC emas — mahalliy
                 "total": total,
                 "total_text": som(total),
                 "state": state,
@@ -866,7 +866,7 @@ def main() -> int:
         else:
             caption = tr("Smena #{n}").format(n=sh["number"])
 
-        def reprint(row: dict) -> None:
+        def reprint(row: dict) -> str:
             text = render_history_sale(
                 row["payload"], market=info.get("market", "Sevimli Market"),
                 point=info.get("point", ""),
@@ -878,10 +878,10 @@ def main() -> int:
                 text, config.printer, config.paper, config.receipt_width,
                 name="chek-qayta",
             )
-            window.flash(
-                tr("Chek qayta chop etildi") if printed
-                else tr("Printer javob bermadi. Chek faylga saqlandi: {p}").format(p=path)
-            )
+            msg = (tr("Chek qayta chop etildi") if printed
+                   else tr("Printer javob bermadi. Chek faylga saqlandi: {p}").format(p=path))
+            window.flash(msg)
+            return msg   # tarix oynasining o'zida ham ko'rsatiladi
 
         HistoryDialog(rows, shift_caption=caption, on_reprint=reprint, parent=window).exec()
 
@@ -1075,7 +1075,7 @@ def main() -> int:
         except Exception as e:
             QMessageBox.critical(None, tr("Qaytarilmadi"), str(e))
             return
-        row = store.db.execute("SELECT sent, last_error FROM outbox WHERE local_uuid=?",
+        row = store.db.execute("SELECT sent, last_error, payload FROM outbox WHERE local_uuid=?",
                                (backend.last_return_uuid,)).fetchone()
         if not row or row["sent"] != 1:
             reason = row["last_error"] if row else ""
@@ -1085,12 +1085,29 @@ def main() -> int:
             flush_now.set()
             return
 
+        import json as _json
+
         from . import printer
-        # Qaytarish cheki — printer bo'lsa chiqaradi
-        text = (
-            f"QAYTARISH\nChek: {backend.last_receipt_number}\n"
-            f"Asl chek: {sale.get('receipt_number') or sale['number']}\n"
-            f"Qaytarildi: {amount // 100} so'm\n"
+        from .history import render_history_return
+
+        # Qaytarish cheki — to'liq ko'rinishda (tarixdagi nusxa bilan bir
+        # xil, faqat NUSXA belgisisiz): do'kon, kassir, chek va asl chek
+        # raqami, vaqt, qaytarilgan tovarlar, summa va qaytarish usuli.
+        # Ilgari 4 qatorli qisqa matn edi (2026-09-23, egasi: «chekni yangila»).
+        try:
+            payload = _json.loads(row["payload"])
+        except (TypeError, ValueError):
+            payload = {}
+        payload.setdefault("receipt_number", backend.last_receipt_number)
+        payload.setdefault("origin_number",
+                           str(sale.get("receipt_number") or sale.get("number") or ""))
+        sh = session.get("shift") or {}
+        text = render_history_return(
+            payload, market=info.get("market", "Sevimli Market"),
+            point=info.get("point", ""),
+            cashier=(session.get("cashier") or {}).get("name", ""),
+            shift_no=sh.get("number", "—"), methods=backend.methods,
+            width=config.receipt_width, copy=False,
         )
         printer.print_text(text, config.printer, name="qaytarish")
 
