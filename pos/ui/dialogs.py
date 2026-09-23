@@ -1035,13 +1035,18 @@ class HistoryDialog(BaseDialog):
     """Tarix — shu smenadagi cheklar. Chek raqami bo'yicha qidiriladi.
 
     Har qatorда: chek raqami (SK-…), vaqti, summasi va holati (yuborildi/
-    navbatда/bekor). Yuqorida raqamli klaviatura — kassir chek raqamini
-    tersa, ro'yxat shu zahoti filtrlanadi.
+    navbatда/bekor). Chapda raqamli klaviatura — kassir chek raqamini
+    tersa, o'ngdagi ro'yxat shu zahoti filtrlanadi.
+
+    Ikki ustun bekorga emas: hammasi bir ustunda turganida oyna ~900 px
+    bo'lib, kassa ekraniga (1366×768) sig'mas va «Qayta chop etish»
+    tugmasi ekran ostiga tushib ketardi (2026-09-23, egasining xabari).
+    Endi eng baland qism — klaviatura (~380 px), oyna ~500 px.
     """
 
     def __init__(self, rows: list[dict], shift_caption: str = "",
                  on_reprint=None, parent=None):
-        super().__init__(tr("Tarix"), width=620, parent=parent)
+        super().__init__(tr("Tarix"), width=880, parent=parent)
         self._rows = rows
         self._query = ""
         self._on_reprint = on_reprint
@@ -1051,48 +1056,68 @@ class HistoryDialog(BaseDialog):
             cap.setAlignment(Qt.AlignCenter)
             self.root.addWidget(cap)
 
+        body = QHBoxLayout()
+        body.setSpacing(20)
+
+        # --- chap: qidiruv + klaviatura
+        left = QVBoxLayout()
+        left.setSpacing(10)
         hint = _label(tr("Chek raqami bo'yicha qidirish"), 13, t.FAINT)
         hint.setAlignment(Qt.AlignCenter)
-        self.root.addWidget(hint)
+        left.addWidget(hint)
 
         self.search = _display("")
-        self.root.addWidget(self.search)
+        left.addWidget(self.search)
 
+        pad = Keypad(with_zeros=False)
+        pad.digit.connect(self._type)
+        pad.backspace.connect(self._back)
+        pad.clear.connect(self._clear)
+        left.addWidget(pad)
+        left.addStretch(1)
+        body.addLayout(left, 2)
+
+        # --- o'ng: cheklar ro'yxati + tugmalar
+        right = QVBoxLayout()
+        right.setSpacing(10)
         self.list = QListWidget()
-        self.list.setMinimumHeight(300)
+        self.list.setMinimumHeight(220)
         self.list.setStyleSheet(
             f"QListWidget {{ border: 1px solid {t.LINE}; border-radius: 10px;"
             f" background: {t.BG}; font-size: 15px; }}"
             f"QListWidget::item {{ padding: 14px 16px;"
             f" border-bottom: 1px solid {t.LINE}; color: {t.INK}; }}"
         )
-        self.root.addWidget(self.list)
+        right.addWidget(self.list, 1)
 
         self.empty = _label("", 14, t.MUTED)
         self.empty.setAlignment(Qt.AlignCenter)
-        self.root.addWidget(self.empty)
-
-        pad = Keypad(with_zeros=False)
-        pad.digit.connect(self._type)
-        pad.backspace.connect(self._back)
-        pad.clear.connect(self._clear)
-        self.root.addWidget(pad)
+        right.addWidget(self.empty)
 
         actions = QHBoxLayout()
         actions.setSpacing(10)
-        self.reprint = touch_button(tr("Qayta chop etish"), size=17, height=64, tone="primary")
+        self.reprint = touch_button(tr("Qayta chop etish"), size=17, height=64, tone="accent")
         self.reprint.setEnabled(False)
         self.reprint.clicked.connect(self._reprint_current)
         self.list.currentItemChanged.connect(
             lambda current, _previous: self.reprint.setEnabled(current is not None)
         )
-        actions.addWidget(self.reprint)
+        actions.addWidget(self.reprint, 3)
         close = touch_button(tr("Yopish"), size=18, height=64, tone="soft")
         close.clicked.connect(self.accept)
-        actions.addWidget(close)
-        self.root.addLayout(actions)
+        actions.addWidget(close, 2)
+        right.addLayout(actions)
+        body.addLayout(right, 5)
+
+        self.root.addLayout(body, 1)
 
         self._refresh()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """Oyna ekrandan baland bo'lmasin va markazda tursin — tugmalar
+        doim ko'rinsin (kichik ekran yoki Windows masshtabi 125–150%)."""
+        super().showEvent(event)
+        _fit_to_screen(self)
 
     def _type(self, d: str) -> None:
         self._query += d
