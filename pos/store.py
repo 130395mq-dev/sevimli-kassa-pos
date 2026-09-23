@@ -21,6 +21,7 @@ import sqlite3
 from decimal import Decimal
 from pathlib import Path
 
+from . import qidiruv
 from .cart import Product
 
 SCHEMA = """
@@ -35,7 +36,9 @@ CREATE TABLE IF NOT EXISTS products (
     plu       INTEGER,
     tracked   INTEGER NOT NULL DEFAULT 0,
     stock     REAL NOT NULL DEFAULT 0,
-    prices    TEXT NOT NULL DEFAULT '{}'
+    prices    TEXT NOT NULL DEFAULT '{}',
+    -- Qidiruv kaliti: nom lotin/kichik harf/toza ko'rinishda (pos/qidiruv.py)
+    search_key TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS products_barcode ON products(barcode);
 CREATE INDEX IF NOT EXISTS products_plu     ON products(plu);
@@ -127,6 +130,18 @@ class Store:
 
         if "price_quote" not in cols:
             self.db.execute("ALTER TABLE products ADD COLUMN price_quote TEXT NOT NULL DEFAULT ''")
+
+        # Qidiruv kaliti (1.18.5): eski bazadagi tovarlarga bir marta yoziladi.
+        # Kalit qoidasi o'zgarsa — «search_key_v1» ni v2 qilib, qayta yoziladi.
+        if "search_key" not in cols:
+            self.db.execute("ALTER TABLE products ADD COLUMN search_key TEXT NOT NULL DEFAULT ''")
+        if not self.get("search_key_v1"):
+            self.db.executemany(
+                "UPDATE products SET search_key = ? WHERE id = ?",
+                [(qidiruv.key(row["name"]), row["id"])
+                 for row in self.db.execute("SELECT id, name FROM products")],
+            )
+            self.set("search_key_v1", "1")
         # Recover old receipts sidelined by temporary outages, once per upgrade.
         if not self.get("outbox_retry_v2"):
             self.db.execute("UPDATE outbox SET attempts=0 WHERE sent=0")
@@ -197,15 +212,17 @@ class Store:
             """
             INSERT INTO products
                 (id, ms_id, name, code, barcode, price, is_weight, plu, tracked,
-                 stock, prices, price_quote)
+                 stock, prices, price_quote, search_key)
             VALUES (:id, :ms_id, :name, :code, :barcode, :price,
-                    :is_weight, :plu, :tracked, :stock, :prices, :price_quote)
+                    :is_weight, :plu, :tracked, :stock, :prices, :price_quote,
+                    :search_key)
             ON CONFLICT(id) DO UPDATE SET
                 ms_id=excluded.ms_id, name=excluded.name, code=excluded.code,
                 barcode=excluded.barcode, price=excluded.price,
                 is_weight=excluded.is_weight, plu=excluded.plu,
                 tracked=excluded.tracked, stock=excluded.stock,
-                prices=excluded.prices, price_quote=excluded.price_quote
+                prices=excluded.prices, price_quote=excluded.price_quote,
+                search_key=excluded.search_key
             """,
             [
                 {
@@ -221,6 +238,7 @@ class Store:
                     "stock": float(r.get("stock") or 0),
                     "prices": json.dumps(r.get("prices") or {}),
                     "price_quote": r.get("price_quote") or "",
+                    "search_key": qidiruv.key(r["name"]),
                 }
                 for r in rows
             ],
@@ -319,14 +337,28 @@ class Store:
         return self._to_product(row) if row else None
 
     def search(self, text: str, limit: int = 200) -> list[Product]:
-        if text:
-            like = f"%{text}%"
+        """Nom yoki kod bo'yicha qidiruv.
+
+        Nom bo'yicha — «kalit» orqali (pos/qidiruv.py): kirill/lotin,
+        katta-kichik harf, so'z tartibi, apostrof farq qilmaydi; so'rovning
+        har bir so'zi nomda uchrasa — topiladi («1 lit sut» → «Сут 1 литр»).
+        Natija: nomi so'rov bilan boshlanganlar oldin, keyin so'z boshi
+        mos kelganlar, keyin qolganlari — har guruh alifbo bo'yicha.
+        """
+        if text and text.strip():
+            toks = qidiruv.tokens(text)
+            if not toks:
+                return []
+            conds = " AND ".join("search_key LIKE ?" for _ in toks)
+            params = [f"%{t}%" for t in toks]
             rows = self.db.execute(
-                "SELECT * FROM products WHERE name LIKE ? OR code LIKE ?"
+                f"SELECT * FROM products WHERE ({conds}) OR code LIKE ?"
                 " ORDER BY name LIMIT ?",
-                (like, like, limit),
+                (*params, f"%{text.strip()}%", limit * 3),
             ).fetchall()
-            return [self._to_product(r) for r in rows]
+            rows.sort(key=lambda r: (qidiruv.rank(r["search_key"], text),
+                                     (r["name"] or "").lower()))
+            return [self._to_product(r) for r in rows[:limit]]
 
         # Qidiruv bo'sh — FAQAT sevimlilar (yulduzcha bosilganlar) ko'rinadi.
         # Qolgan tovarlar ko'rsatilmaydi; kassir ularni qidiruv orqali topadi.
