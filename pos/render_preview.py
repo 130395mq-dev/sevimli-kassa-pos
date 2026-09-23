@@ -33,16 +33,26 @@ def main():
     out = Path("previews")
     out.mkdir(exist_ok=True)
     backend = PreviewBackend()
-    win = MainWindow(backend, animated_bg=False)
+    # Har ekran o'lchami uchun alohida oyna — chek paneli kengligi
+    # ekranga qarab tanlanadi (4:3 kassa ekranida torroq).
+    for width,height in [(1024,768), (1280,1024), (1366,768), (1920,1080)]:
+        w = MainWindow(backend, animated_bg=False,
+                       receipt_width=theme.receipt_width(width))
+        w.shift_label.setText("Smena #14")
+        w.fill_catalog(backend.products)
+        w.resize(width,height)
+        w.show()
+        app.processEvents()
+        assert w.width() == width, ("layout too wide", w.width(), width)
+        w.grab().save(str(out / f"kassa-empty-{width}.png"))
+        w.close()
+    win = MainWindow(backend, animated_bg=False,
+                     receipt_width=theme.receipt_width(1366))
     win.shift_label.setText("Smena #14")
     win.fill_catalog(backend.products)
-    for width,height in [(1366,768), (1280,720), (1920,1080)]:
-        win.resize(width,height)
-        win.show()
-        app.processEvents()
-        assert win.width() == width, ("layout too wide", win.width(), width)
-        win.grab().save(str(out / f"kassa-empty-{width}.png"))
     win.resize(1366,768)
+    win.show()
+    app.processEvents()
     for p in backend.products[:4]:
         win.cart.add(p, Decimal(2))
     win.refresh()
