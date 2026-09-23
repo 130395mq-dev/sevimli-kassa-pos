@@ -74,37 +74,55 @@ class Keypad(QWidget):
     digit = Signal(str)
     backspace = Signal()
     clear = Signal()
+    comma = Signal()
 
-    def __init__(self, *, with_zeros: bool = True, parent=None):
+    def __init__(self, *, with_zeros: bool = True, with_comma: bool = False,
+                 parent=None):
         super().__init__(parent)
 
         grid = QGridLayout(self)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(8)
 
+        # Vergulli klaviaturada pastki qator 4 ta tugma (000 · 0 · , · ←).
+        # Ustunlar tekis chiqishi uchun to'r 12 ustunli: raqam tugmalari
+        # 4 tadan, pastki qatordagilar 3 tadan ustun egallaydi.
+        span = 4 if with_comma else 1
         for i in range(9):
             row, col = divmod(i, 3)
             btn = touch_button(str(i + 1), size=24)
             btn.clicked.connect(lambda _=False, d=str(i + 1): self.digit.emit(d))
-            grid.addWidget(btn, row, col)
+            grid.addWidget(btn, row, col * span, 1, span)
 
-        # Oxirgi qator: 000 · 0 · o'chirish
+        # Oxirgi qator: 000 · 0 · [ , ] · o'chirish
+        bottom = []
         if with_zeros:
             triple = touch_button("000", size=20)
             triple.clicked.connect(lambda: self.digit.emit("000"))
-            grid.addWidget(triple, 3, 0)
+            bottom.append(triple)
         else:
             spacer = touch_button("C", size=20, tone="soft")
             spacer.clicked.connect(self.clear.emit)
-            grid.addWidget(spacer, 3, 0)
+            bottom.append(spacer)
 
         zero = touch_button("0", size=24)
         zero.clicked.connect(lambda: self.digit.emit("0"))
-        grid.addWidget(zero, 3, 1)
+        bottom.append(zero)
+
+        if with_comma:
+            # Tiyinli summa uchun (aralash to'lov: 6001,20). Boshqa
+            # oynalarda kerak emas — so'mda tiyin terilmaydi.
+            comma = touch_button(",", size=26)
+            comma.clicked.connect(self.comma.emit)
+            bottom.append(comma)
 
         back = touch_button("←", size=26, tone="soft")
         back.clicked.connect(self.backspace.emit)
-        grid.addWidget(back, 3, 2)
+        bottom.append(back)
+
+        width = 12 // len(bottom) if with_comma else 1
+        for k, btn in enumerate(bottom):
+            grid.addWidget(btn, 3, k * width, 1, width)
 
 
 class Letters(QWidget):
