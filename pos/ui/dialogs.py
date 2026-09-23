@@ -1082,17 +1082,27 @@ class HistoryDialog(BaseDialog):
         right.setSpacing(10)
         self.list = QListWidget()
         self.list.setMinimumHeight(220)
+        # Rang QListWidget darajasida: `::item {{ color }}` yozilsa qaytarish
+        # qatorining qizil rangi (setForeground) bosilib qolardi.
         self.list.setStyleSheet(
             f"QListWidget {{ border: 1px solid {t.LINE}; border-radius: 10px;"
-            f" background: {t.BG}; font-size: 15px; }}"
+            f" background: {t.BG}; font-size: 15px; color: {t.INK}; }}"
             f"QListWidget::item {{ padding: 14px 16px;"
-            f" border-bottom: 1px solid {t.LINE}; color: {t.INK}; }}"
+            f" border-bottom: 1px solid {t.LINE}; }}"
         )
         right.addWidget(self.list, 1)
 
         self.empty = _label("", 14, t.MUTED)
         self.empty.setAlignment(Qt.AlignCenter)
         right.addWidget(self.empty)
+
+        # Qayta chop etish natijasi SHU OYNADA ko'rinsin: asosiy oynadagi
+        # xabar (flash) modal oyna ortida qolib, kassir chek chiqdimi-yo'qmi
+        # bilmay turardi.
+        self.note = _label("", 14, t.ACCENT, bold=True)
+        self.note.setAlignment(Qt.AlignCenter)
+        self.note.setWordWrap(True)
+        right.addWidget(self.note)
 
         actions = QHBoxLayout()
         actions.setSpacing(10)
@@ -1134,7 +1144,9 @@ class HistoryDialog(BaseDialog):
     def _reprint_current(self) -> None:
         item = self.list.currentItem()
         if item is not None and self._on_reprint:
-            self._on_reprint(item.data(Qt.UserRole))
+            result = self._on_reprint(item.data(Qt.UserRole))
+            if isinstance(result, str):
+                self.note.setText(result)
 
     def _refresh(self) -> None:
         # Qidiruv maydoni: terilgan raqam yoki bo'sh belgi
