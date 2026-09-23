@@ -429,6 +429,9 @@ def return_payload(origin: dict, lines: list[dict], refund_method: str,
         "local_uuid": local_uuid,
         "kind": "return",
         "origin_id": origin["id"],
+        # Asl chek raqami — faqat kassa tarixida qayta chop etish uchun
+        # (server e'tibor bermaydi, unga origin_id yetarli).
+        "origin_number": str(origin.get("receipt_number") or origin.get("number") or ""),
         "created_at": created_at,
         "customer_id": None,  # server asl chekdan oladi
         "gross_total": total,
