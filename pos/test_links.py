@@ -197,9 +197,9 @@ class ReceiptRowTest(unittest.TestCase):
         # Minimal kenglik panel kengligidan oshmasin — aks holda summa
         # o'ng chetga kirib ketadi (gorizontal skroll yo'q)
         self.assertLessEqual(w.minimumSizeHint().width(), t.RECEIPT_WIDTH)
-        self.assertGreaterEqual(w.minimumHeight(), 58)
+        self.assertGreaterEqual(w.minimumHeight(), 64)
         short = MainWindow._row_widget("Non", "2 × 3 000", "6 000")
-        self.assertEqual(short.minimumHeight(), 58)
+        self.assertEqual(short.minimumHeight(), 64)   # barmoq uchun
         self.assertGreater(w.minimumHeight(), short.minimumHeight())  # 2 qator
 
 if __name__ == "__main__":
