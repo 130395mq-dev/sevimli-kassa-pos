@@ -36,6 +36,11 @@ class SplitDialogTest(unittest.TestCase):
         for d in digits:
             dlg.on_digit(d)
 
+    @staticmethod
+    def plain(text: str) -> str:
+        """Uzilmaydigan probelni oddiy probelga — solishtirish oson bo'lsin."""
+        return text.replace("\u00a0", " ").replace("\u202f", " ")
+
     def test_naqd_birinchi_va_tanlangan(self):
         dlg = self.dialog()
         self.assertEqual([m["code"] for m in dlg.methods][0], "naqd")
@@ -96,6 +101,87 @@ class SplitDialogTest(unittest.TestCase):
         self.assertEqual(dlg.typed["naqd"], "1234")
         dlg.on_clear()
         self.assertEqual(dlg.typed["naqd"], "")
+
+    # ---------------------------------- vaznli tovar: chek tiyinli (16 001,20)
+
+    KILOLI = 1_600_120
+
+    def test_kiloli_chek_karta_keyin_naqd_qolganini(self):
+        dlg = self.dialog(self.KILOLI)
+        self.assertEqual(self.plain(dlg.total_label.text()), "16 001,20")
+        dlg.select("uzcard")
+        self.type_(dlg, "10000")
+        dlg.select("naqd")
+        dlg.put_rest()
+        self.assertEqual(self.plain(dlg.rows["naqd"].amount_label.text()), "6 001,20")
+        self.assertEqual(dlg.status_title.text(), "HAMMASI YOPILDI")
+        self.assertTrue(dlg.finish.isEnabled())
+        dlg._finish()
+        self.assertEqual([(p.method, p.amount) for p in dlg.parts],
+                         [("naqd", 600_120), ("uzcard", 1_000_000)])
+        self.assertEqual(sum(p.amount for p in dlg.parts), self.KILOLI)
+        self.assertEqual(dlg.change, 0)
+
+    def test_kiloli_chek_naqd_keyin_karta_qolganini(self):
+        dlg = self.dialog(self.KILOLI)
+        self.type_(dlg, "6001")
+        dlg.select("click")
+        dlg.put_rest()
+        self.assertEqual(self.plain(dlg.rows["click"].amount_label.text()), "10 000,20")
+        self.assertTrue(dlg.finish.isEnabled())
+        dlg._finish()
+        self.assertEqual([(p.method, p.amount) for p in dlg.parts],
+                         [("naqd", 600_100), ("click", 1_000_020)])
+
+    def test_kiloli_chek_faqat_karta_qolganini(self):
+        dlg = self.dialog(self.KILOLI)
+        dlg.select("humo")
+        dlg.put_rest()
+        self.assertTrue(dlg.finish.isEnabled())
+        dlg._finish()
+        self.assertEqual([(p.method, p.amount) for p in dlg.parts],
+                         [("humo", self.KILOLI)])
+
+    def test_kiloli_chek_qoldi_nol_deb_aldamaydi(self):
+        dlg = self.dialog(self.KILOLI)
+        dlg.select("uzcard")
+        self.type_(dlg, "10000")
+        dlg.select("naqd")
+        self.type_(dlg, "6001")          # butun so'm — 20 tiyin yetmaydi
+        self.assertEqual(dlg.status_title.text(), "QOLDI")
+        self.assertEqual(dlg.status_value.text(), "0,20")
+        self.assertFalse(dlg.finish.isEnabled())
+        dlg.on_backspace()
+        self.type_(dlg, "2")             # 6 002 — qaytim 80 tiyin
+        self.assertEqual(dlg.status_title.text(), "QAYTIM")
+        self.assertEqual(dlg.status_value.text(), "0,80")
+        self.assertTrue(dlg.finish.isEnabled())
+        dlg._finish()
+        self.assertEqual(dlg.change, 80)
+        self.assertEqual(sum(p.amount for p in dlg.parts), self.KILOLI)
+
+    def test_qolganini_dan_keyin_terish_aniq_summani_bekor_qiladi(self):
+        dlg = self.dialog(self.KILOLI)
+        dlg.put_rest()
+        self.assertEqual(dlg.typed["naqd"], "16001")
+        self.assertEqual(dlg.exact["naqd"], self.KILOLI)
+        dlg.on_backspace()
+        self.assertIsNone(dlg.exact["naqd"])
+        self.assertEqual(dlg.typed["naqd"], "1600")
+        self.assertEqual(dlg.status_title.text(), "QOLDI")
+        dlg.put_rest()
+        self.assertEqual(dlg.exact["naqd"], self.KILOLI)
+        dlg.on_clear()
+        self.assertIsNone(dlg.exact["naqd"])
+        self.assertEqual(dlg.typed["naqd"], "")
+
+    def test_butun_chekda_hech_narsa_ozgarmadi(self):
+        dlg = self.dialog(200_000_00)
+        self.assertEqual(self.plain(dlg.total_label.text()), "200 000")
+        dlg.put_rest()
+        self.assertEqual(self.plain(dlg.rows["naqd"].amount_label.text()), "200 000")
+        self.assertEqual(dlg.status_title.text(), "HAMMASI YOPILDI")
+        self.assertEqual(dlg.status_value.text(), "0")
 
     def test_tolov_oynasidan_aralash_qismlar_qoshiladi(self):
         from .ui.payment_dialog import PaymentDialog
