@@ -14,7 +14,7 @@ from decimal import Decimal
 
 from .barcode import Scan, ean13_check_digit, parse, valid_ean13
 from .cart import Cart, Customer, PaymentPlan, Product, SplitEntry, split_payment
-from .money import line_total, parse_som, qty_str, som
+from .money import line_total, parse_som, qty_str, som, som_exact
 
 
 def make_product(price=3_000_00, weight=False, pid=1):
@@ -31,6 +31,15 @@ class MoneyTest(unittest.TestCase):
         self.assertEqual(som(1_382_960_000).replace("\u00a0", " "), "13 829 600")
         self.assertEqual(som(0), "0")
         self.assertEqual(som(-8_400_000).replace("\u00a0", " "), "-84 000")
+
+    def test_som_exact_tiyinni_yashirmaydi(self):
+        # Vaznli tovar: 16 001,20 so'm — tiyin bor, ko'rsatiladi
+        self.assertEqual(som_exact(1_600_120).replace("\u00a0", " "), "16 001,20")
+        # Butun so'm — `som` bilan bir xil
+        self.assertEqual(som_exact(1_600_000).replace("\u00a0", " "), "16 000")
+        self.assertEqual(som_exact(20), "0,20")
+        self.assertEqual(som_exact(0), "0")
+        self.assertEqual(som_exact(-150), "-1,50")
 
     def test_qty(self):
         self.assertEqual(qty_str(Decimal("2.000")), "2")
