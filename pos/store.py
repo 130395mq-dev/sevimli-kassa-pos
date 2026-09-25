@@ -573,6 +573,29 @@ class Store:
             (key, value),
         )
 
+    # ------------------------------------------------ yopilgan smena cheklari
+    #
+    # Smena yopilganda printerda qog'oz tugab qolsa, Z-hisobot chiqmay qoladi.
+    # Matn shu yerda saqlanadi — «Smena chekini qayta chiqarish» orqali istalgan
+    # payt qayta chop etiladi (2026-09-25, egasining so'rovi).
+
+    SHIFT_RECEIPTS_KEEP = 10
+
+    def add_shift_receipt(self, shift_no, closed_at: str, text: str) -> None:
+        """Yopilgan smena chekini saqlaydi (eng yangisi birinchi)."""
+        items = self.shift_receipts()
+        items.insert(0, {"shift_no": str(shift_no or "—"),
+                         "closed_at": closed_at, "text": text})
+        self.set("shift_receipts",
+                 json.dumps(items[:self.SHIFT_RECEIPTS_KEEP], ensure_ascii=False))
+
+    def shift_receipts(self) -> list[dict]:
+        try:
+            data = json.loads(self.get("shift_receipts") or "[]")
+        except ValueError:
+            return []
+        return [d for d in data if isinstance(d, dict) and d.get("text")]
+
     # ------------------------------------------- internetsiz ochilgan smena
 
     # ------------------------------------------------ pul kiritish/chiqarish
