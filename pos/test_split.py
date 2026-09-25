@@ -89,10 +89,82 @@ class SplitDialogTest(unittest.TestCase):
 
     def test_qolganini_tugmasi_yopilganda_ochadi(self):
         dlg = self.dialog()
-        dlg.put_rest()  # naqdga hammasi
-        self.assertEqual(dlg.typed["naqd"], "200000")
+        self.type_(dlg, "200000")          # naqdga QO'LDA hammasi
         dlg.select("click")
+        self.assertEqual(dlg.typed["click"], "")   # hech narsa tushmaydi
         self.assertFalse(dlg.rest_btn.isEnabled())
+
+    # -------------------- qatorga bosilsa qolgan summa o'zi tushadi (1.18.6)
+
+    TOTAL = 2_250_055    # 22 500,55 so'm — egasining misoli
+
+    def test_qatorga_bosilsa_qolgani_ozi_tushadi(self):
+        dlg = self.dialog(self.TOTAL)
+        self.type_(dlg, "10000")               # naqd 10 000
+        dlg.select("uzcard")
+        self.assertEqual(dlg.typed["uzcard"], "12500,55")
+        self.assertEqual(self.plain(dlg.rows["uzcard"].amount_label.text()), "12 500,55")
+        self.assertTrue(dlg.rows["uzcard"].hint_label.isVisibleTo(dlg))
+        self.assertEqual(dlg.status_title.text(), "HAMMASI YOPILDI")
+        self.assertTrue(dlg.finish.isEnabled())
+        dlg._finish()
+        self.assertEqual([(p.method, p.amount) for p in dlg.parts],
+                         [("naqd", 1_000_000), ("uzcard", 1_250_055)])
+
+    def test_avto_summa_ustidan_terilsa_almashadi(self):
+        dlg = self.dialog(self.TOTAL)
+        dlg.select("uzcard")                   # hammasi tushdi
+        self.assertEqual(dlg.typed["uzcard"], "22500,55")
+        self.type_(dlg, "10000")               # qo'shilmaydi — almashadi
+        self.assertEqual(dlg.typed["uzcard"], "10000")
+        self.assertIsNone(dlg.auto_code)
+        self.assertFalse(dlg.rows["uzcard"].hint_label.isVisibleTo(dlg))
+        dlg.select("naqd")
+        self.assertEqual(dlg.typed["naqd"], "12500,55")
+        self.type_(dlg, "15000")               # mijoz 15 000 berdi
+        self.assertEqual(dlg.status_title.text(), "QAYTIM")
+        self.assertEqual(dlg.status_value.text(), "2 499,45".replace(" ", "\u00a0"))
+        dlg._finish()
+        self.assertEqual(dlg.change, 249_945)
+
+    def test_avto_qator_boshqasiga_moslashadi(self):
+        dlg = self.dialog(self.TOTAL)
+        dlg.select("uzcard")                   # 22 500,55 — avto
+        dlg.select("naqd")                     # bo'sh qoladi: qolgan yo'q
+        self.assertEqual(dlg.typed["naqd"], "")
+        self.type_(dlg, "10000")
+        self.assertEqual(dlg.typed["uzcard"], "12500,55")   # o'zi moslashdi
+        self.type_(dlg, "0")                   # naqd 100 000 — chekdan ko'p
+        self.assertEqual(dlg.typed["uzcard"], "")
+        self.assertEqual(dlg.status_title.text(), "QAYTIM")
+        dlg.on_backspace()                     # yana 10 000
+        self.assertEqual(dlg.typed["uzcard"], "12500,55")
+        dlg.select("humo")
+        self.type_(dlg, "5000")                # uchinchi tur
+        self.assertEqual(dlg.typed["uzcard"], "7500,55")
+        self.assertTrue(dlg.finish.isEnabled())
+
+    def test_qolda_yozilgan_summaga_tegilmaydi(self):
+        dlg = self.dialog(self.TOTAL)
+        self.type_(dlg, "10000")
+        dlg.select("uzcard")
+        dlg.select("naqd")                     # to'la qatorga bosish — o'zgarmaydi
+        self.assertEqual(dlg.typed["naqd"], "10000")
+        self.assertEqual(dlg.typed["uzcard"], "12500,55")
+
+    def test_qolganini_avto_summani_kochiradi(self):
+        dlg = self.dialog(self.TOTAL)
+        self.type_(dlg, "10000")
+        dlg.select("humo")                     # 12 500,55 humoga tushdi
+        dlg.select("click")                    # fikr o'zgardi — click
+        self.assertTrue(dlg.rest_btn.isEnabled())
+        dlg.put_rest()
+        self.assertEqual(dlg.typed["humo"], "")
+        self.assertEqual(dlg.typed["click"], "12500,55")
+        self.assertEqual(dlg.auto_code, "click")
+        dlg._finish()
+        self.assertEqual([(p.method, p.amount) for p in dlg.parts],
+                         [("naqd", 1_000_000), ("click", 1_250_055)])
 
     def test_ochirish_va_orqaga(self):
         dlg = self.dialog()
