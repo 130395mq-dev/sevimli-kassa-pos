@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from ..i18n import tr
 from ..version import VERSION
+from . import icons
 from . import theme as t
 
 # Klaviatura tugmasi: to'q sirt, yupqa chegara, bosilganda zumrad tus
@@ -229,6 +230,8 @@ class LoginScreen(QWidget):
     quit_requested = Signal()
     resume_requested = Signal()
     logout_requested = Signal()
+    #: «Smena chekini qayta chiqarish» — yopilgan smenalar ro'yxati ochiladi
+    shift_receipts_requested = Signal()
     #: Ekran klaviaturasi ko'rsatildi/yashirildi — kassa buni eslab qoladi
     keyboard_toggled = Signal(bool)
 
@@ -316,6 +319,38 @@ class LoginScreen(QWidget):
 
         outer = QVBoxLayout(panel)
         outer.setContentsMargins(0, 10, 0, 10)
+
+        # O'ng yuqori burchak: «Smena cheki» — smena yopilganda qog'oz tugab
+        # Z-hisobot chiqmay qolsa, shu yerdan qayta chiqariladi. Ko'zga
+        # tashlanadigan, lekin «SMENA OCHISH» bilan adashmaydigan joyda
+        # (2026-09-25, egasining so'rovi). Faqat kassir kirgan rejimda.
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 14, 24, 0)
+        top.addStretch(1)
+        self.resume_receipts = QPushButton("  " + tr("Smena cheki"))
+        self.resume_receipts.setIcon(icons.icon("printer", 22, t.ACCENT))
+        self.resume_receipts.setIconSize(icons.button_icon_size(22))
+        self.resume_receipts.setFixedHeight(56)
+        self.resume_receipts.setMinimumWidth(200)
+        self.resume_receipts.setCursor(Qt.PointingHandCursor)
+        self.resume_receipts.setFocusPolicy(Qt.NoFocus)
+        self.resume_receipts.setToolTip(tr("Smena chekini qayta chiqarish"))
+        self.resume_receipts.setStyleSheet(
+            f"QPushButton {{ background:{t.BG}; color:{t.ACCENT};"
+            f" border:2px solid {t.ACCENT}; border-radius:12px;"
+            f" font-size:16px; font-weight:700; padding:0 20px; }}"
+            f"QPushButton:hover {{ background:{t.ACCENT_PALE}; }}"
+            f"QPushButton:pressed {{ background:{t.ACCENT}; color:#FFFFFF; }}"
+        )
+        receipts_shadow = QGraphicsDropShadowEffect(self.resume_receipts)
+        receipts_shadow.setBlurRadius(18)
+        receipts_shadow.setOffset(0, 3)
+        receipts_shadow.setColor(QColor(28, 21, 23, 30))
+        self.resume_receipts.setGraphicsEffect(receipts_shadow)
+        self.resume_receipts.clicked.connect(self.shift_receipts_requested.emit)
+        self.resume_receipts.hide()
+        top.addWidget(self.resume_receipts)
+        outer.addLayout(top)
         outer.addStretch(1)
 
         card = QFrame()
@@ -405,21 +440,14 @@ class LoginScreen(QWidget):
 
         # «Davom etish» kartasi — login-parolsiz (kassir chiqmagan)
         self.resume_card = self._resume_card()
+        # Burchakda: [Kassirni almashtirish] [Smena cheki]
+        top.insertWidget(1, self.resume_logout)
+        top.insertSpacing(2, 12)
         self.resume_card.hide()
         outer.addWidget(self.resume_card, 0, Qt.AlignHCenter)
-        outer.addSpacing(16)
-
-        quit_btn = QPushButton(tr("Dasturni yopish"))
-        quit_btn.setFixedHeight(36)
-        quit_btn.setCursor(Qt.PointingHandCursor)
-        quit_btn.setFocusPolicy(Qt.NoFocus)
-        quit_btn.setStyleSheet(
-            f"QPushButton {{ background:transparent; color:{t.FAINT};"
-            f" border:none; font-size:13px; }}"
-            f"QPushButton:hover {{ color:{t.INK_SOFT}; }}"
-        )
-        quit_btn.clicked.connect(self.quit_requested.emit)
-        outer.addWidget(quit_btn, 0, Qt.AlignHCenter)
+        # «Dasturni yopish» tugmasi olib tashlandi (2026-09-25, egasining
+        # so'rovi) — kassir adashib bosib, kassani yopib qo'ymasin. Kerak
+        # bo'lsa oynaning × tugmasi bor. `quit_requested` signali qoldi.
         outer.addStretch(1)
         return panel
 
@@ -457,23 +485,28 @@ class LoginScreen(QWidget):
         )
         self.resume_btn.clicked.connect(self.resume_requested.emit)
         col.addWidget(self.resume_btn)
-        col.addSpacing(12)
 
-        # Kichik, bo'rtib turmaydigan «Chiqish» — kassir uni kamdan-kam
-        # bosadi (kunda bir marta). Katta «SMENA OCHISH» yonida kichik
-        # bo'lsin, adashib bosilmasin; bosilsa ham tasdiq so'raladi.
-        self.resume_logout = QPushButton(tr("Chiqish"))
-        self.resume_logout.setFixedHeight(34)
-        self.resume_logout.setFixedWidth(150)
+        # «Kassirni almashtirish» (avval kartadagi kichik «Chiqish») — endi
+        # o'ng yuqori burchakda, «Smena cheki» yonida (2026-09-25, egasining
+        # qarori): kartada faqat SMENA OCHISH qoladi. Butunlay olib
+        # tashlanmadi — aks holda smena yopiq paytda boshqa kassir kira
+        # olmas, avval eski kassir nomidan smena ochishga majbur bo'lardi.
+        # Bosilsa baribir tasdiq so'raladi.
+        self.resume_logout = QPushButton("  " + tr("Kassirni almashtirish"))
+        self.resume_logout.setIcon(icons.icon("user", 20, t.INK_SOFT))
+        self.resume_logout.setIconSize(icons.button_icon_size(20))
+        self.resume_logout.setFixedHeight(56)
         self.resume_logout.setCursor(Qt.PointingHandCursor)
         self.resume_logout.setFocusPolicy(Qt.NoFocus)
         self.resume_logout.setStyleSheet(
-            f"QPushButton {{ background:transparent; color:{t.MUTED};"
-            f" border:none; font-size:13px; font-weight:600; }}"
-            f"QPushButton:pressed {{ color:{t.INK}; }}"
+            f"QPushButton {{ background:{t.BG}; color:{t.INK_SOFT};"
+            f" border:2px solid {t.LINE_STRONG}; border-radius:12px;"
+            f" font-size:15px; font-weight:700; padding:0 18px; }}"
+            f"QPushButton:hover {{ background:{t.BG_SOFT}; }}"
+            f"QPushButton:pressed {{ background:{t.SURFACE_2}; }}"
         )
         self.resume_logout.clicked.connect(self._confirm_logout)
-        col.addWidget(self.resume_logout, 0, Qt.AlignHCenter)
+        self.resume_logout.hide()
         return card
 
     def _confirm_logout(self) -> None:
@@ -513,6 +546,8 @@ class LoginScreen(QWidget):
         self.hint.setText("")
         self.card.hide()
         self.resume_card.show()
+        self.resume_receipts.show()
+        self.resume_logout.show()
         self._blink.stop()
         self._fit()
         self.show()
@@ -532,6 +567,8 @@ class LoginScreen(QWidget):
         self.hint.setText("")
         self.enter.setEnabled(True)
         self.resume_card.hide()
+        self.resume_receipts.hide()
+        self.resume_logout.hide()
         self.card.show()
         self._caret = True
         self._blink.start()
