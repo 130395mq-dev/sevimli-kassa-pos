@@ -80,6 +80,19 @@ class StoreTest(unittest.TestCase):
     def test_topilmasa_none(self):
         self.assertIsNone(self.store.by_barcode("0000000000000"))
 
+    def test_smena_cheklari_saqlanadi(self):
+        self.assertEqual(self.store.shift_receipts(), [])
+        for n in range(1, 13):
+            self.store.add_shift_receipt(n, f"25.09.2026 2{n % 10}:00", f"Z-{n}")
+        items = self.store.shift_receipts()
+        self.assertEqual(len(items), Store.SHIFT_RECEIPTS_KEEP)      # 10 tadan ortiq emas
+        self.assertEqual(items[0]["shift_no"], "12")                # eng yangisi birinchi
+        self.assertEqual(items[0]["text"], "Z-12")
+        self.store.add_shift_receipt(None, "x", "Z-oflayn")
+        self.assertEqual(self.store.shift_receipts()[0]["shift_no"], "—")
+        self.store.set("shift_receipts", "buzuq")                   # yiqilmaydi
+        self.assertEqual(self.store.shift_receipts(), [])
+
     def test_nom_boyicha_qidiruv(self):
         self.assertEqual(len(self.store.search("buhan")), 1)
         # Qidiruv bo'sh -> FAQAT sevimlilar. Sevimli yo'q ekan -> bo'sh.
