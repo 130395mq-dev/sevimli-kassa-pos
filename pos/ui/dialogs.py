@@ -291,10 +291,18 @@ class OpeningCashDialog(NumberDialog):
 
 
 class ReceiptDialog(BaseDialog):
-    """Chekni ko'rsatadi."""
+    """Chekni ko'rsatadi. `on_reprint` berilsa — «Qayta chop etish» tugmasi.
 
-    def __init__(self, text: str, printed: bool, path, parent=None):
+    Printer qog'ozi tugab qolsa ham Windows chekni «yuborildi» deb qabul
+    qiladi — kassir buni faqat qog'ozga qarab biladi. Shuning uchun qog'oz
+    qo'yilgach shu oynaning o'zidan qayta chop etiladi.
+    `printed=None` — chek hozir chop etilmagan (ro'yxatdan ochilgan).
+    """
+
+    def __init__(self, text: str, printed: bool | None, path, parent=None,
+                 on_reprint=None):
         super().__init__(tr("Smena cheki"), width=600, parent=parent)
+        self._on_reprint = on_reprint
 
         view = QPlainTextEdit()
         view.setPlainText(text)
@@ -303,24 +311,53 @@ class ReceiptDialog(BaseDialog):
         font.setStyleHint(QFont.Monospace)
         font.setPixelSize(13)
         view.setFont(font)
-        view.setMinimumHeight(440)
+        view.setMinimumHeight(380)
         view.setStyleSheet(
             f"border: 1px solid {t.LINE}; border-radius: 10px;"
             f"background: {t.BG_SOFT}; color: {t.INK};"
         )
         self.root.addWidget(view)
 
-        note = _label(
-            "Chek printerga yuborildi." if printed
-            else f"Printer javob bermadi. Chek faylga saqlandi:\n{path}",
-            13, t.MUTED if printed else t.WARN,
-        )
-        note.setWordWrap(True)
-        self.root.addWidget(note)
+        if printed is None:
+            text_note, color = "", t.MUTED
+        elif printed:
+            text_note = tr("Chek printerga yuborildi.")
+            if on_reprint:
+                text_note += " " + tr("Chiqmagan bo'lsa (qog'oz tugagan) — "
+                                      "qog'oz qo'yib «Qayta chop etish» ni bosing.")
+            color = t.MUTED
+        else:
+            text_note = tr("Printer javob bermadi. Chek faylga saqlandi:") + f"\n{path}"
+            color = t.WARN
+        self.note = _label(text_note, 13, color)
+        self.note.setWordWrap(True)
+        self.root.addWidget(self.note)
 
-        ok = touch_button("YOPISH", size=18, height=68, tone="accent")
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.reprint = None
+        if on_reprint:
+            self.reprint = touch_button(tr("Qayta chop etish"), size=17,
+                                        height=68, tone="soft")
+            self.reprint.clicked.connect(self._reprint)
+            row.addWidget(self.reprint, 1)
+        ok = touch_button(tr("YOPISH"), size=18, height=68, tone="accent")
         ok.clicked.connect(self.accept)
-        self.root.addWidget(ok)
+        row.addWidget(ok, 1)
+        self.root.addLayout(row)
+
+    def _reprint(self) -> None:
+        msg = self._on_reprint() if self._on_reprint else None
+        if isinstance(msg, str):
+            self.note.setText(msg)
+            self.note.setStyleSheet(
+                f"color: {t.ACCENT}; background: transparent; border: none;"
+            )
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """Kichik ekranda ham tugmalar ko'rinib tursin."""
+        super().showEvent(event)
+        _fit_to_screen(self)
 
 
 # ------------------------------------------------------------------ mijoz
