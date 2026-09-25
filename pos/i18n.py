@@ -166,8 +166,9 @@ _RU: dict[str, str] = {
     "QOLGANINI": "ОСТАТОК",
     "QOLDI": "ОСТАЛОСЬ",
     "HAMMASI YOPILDI": "ОПЛАЧЕНО ПОЛНОСТЬЮ",
-    "Qatorga bosing, summani tering. «QOLGANINI» — qolgan summani qo'yadi.":
-        "Нажмите на строку, наберите сумму. «ОСТАТОК» — поставит остаток.",
+    "Qatorga bosing — qolgan summa o'zi tushadi. Boshqa summa kerak bo'lsa, ustidan tering.":
+        "Нажмите на строку — остаток встанет сам. Нужна другая сумма — наберите поверх.",
+    "qolgani": "остаток",
     "Karta/onlayn summasi chekdan ko'p": "Сумма карт/онлайн больше чека",
     "Karta/onlayn chekni to'liq yopdi — naqd summasini o'chiring":
         "Карта/онлайн уже закрыли чек — уберите наличные",
