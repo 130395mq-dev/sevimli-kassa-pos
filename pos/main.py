@@ -763,7 +763,39 @@ def main() -> int:
         printed, path = printer.print_text(
             data["receipt_text"], config.printer, name="oraliq"
         )
-        ReceiptDialog(data["receipt_text"], printed, path, window).exec()
+        ReceiptDialog(data["receipt_text"], printed, path, window,
+                      on_reprint=lambda: _reprint_text(data["receipt_text"], "oraliq")
+                      ).exec()
+
+    def _reprint_text(text: str, name: str) -> str:
+        """Hisobotni qayta chop etadi; kassirga ko'rsatiladigan natija matni."""
+        from . import printer
+
+        printed, path = printer.print_text(text, config.printer, name=name)
+        return (tr("Chek qayta chop etildi") if printed
+                else tr("Printer javob bermadi. Chek faylga saqlandi: {p}").format(p=path))
+
+    def show_shift_receipts() -> None:
+        """Yopilgan smenalar cheklari — qog'oz tugab chiqmay qolganini qayta
+        chop etish uchun (SMENA OCHISH ekranidagi havola)."""
+        from .ui.dialogs import PickDialog
+
+        items = store.shift_receipts()
+        rows = [
+            (tr("Smena #{n}").format(n=it.get("shift_no", "—"))
+             + f"   ·   {it.get('closed_at', '')}", i)
+            for i, it in enumerate(items)
+        ]
+        dialog = PickDialog(
+            tr("Smena cheklari"), rows,
+            empty_text=tr("Hali yopilgan smena yo'q"), pick_text=tr("OCHISH"),
+            parent=window,
+        )
+        if dialog.exec() != PickDialog.Accepted or dialog.chosen is None:
+            return
+        text = items[dialog.chosen]["text"]
+        ReceiptDialog(text, None, None, window,
+                      on_reprint=lambda: _reprint_text(text, "smena-qayta")).exec()
 
     def cash_move(kind: str) -> None:
         dialog = CashDialog(kind, window)
@@ -996,6 +1028,9 @@ def main() -> int:
         QTimer.singleShot(1200, _force)
 
     login_screen.quit_requested.connect(quit_app)
+    # show_shift_receipts yuqorida (show_report yonida) aniqlangan — ulash
+    # shu yerda, aks holda dastur ochilishida nom hali mavjud bo'lmasdi.
+    login_screen.shift_receipts_requested.connect(show_shift_receipts)
 
     def toggle_language() -> None:
         """Tilni almashtiradi. To'liq qo'llanishi uchun dastur qayta ochiladi."""
@@ -1171,10 +1206,20 @@ def main() -> int:
             )
             return
 
+        # Qog'oz tugab qolsa ham chek yo'qolmasin — saqlab qo'yamiz
+        # (keyin «Smena chekini qayta chiqarish» dan olinadi).
+        try:
+            store.add_shift_receipt(sh.get("number") or "—",
+                                    datetime.now().strftime("%d.%m.%Y %H:%M"),
+                                    result["receipt_text"])
+        except Exception:  # noqa: BLE001 — saqlanmasa ham smena yopildi
+            logger.exception("Smena cheki saqlanmadi")
         printed, path = printer.print_text(
             result["receipt_text"], config.printer, name="smena"
         )
-        ReceiptDialog(result["receipt_text"], printed, path, window).exec()
+        ReceiptDialog(result["receipt_text"], printed, path, window,
+                      on_reprint=lambda: _reprint_text(result["receipt_text"], "smena-qayta")
+                      ).exec()
         # Smena yopildi — dastur yopilmaydi. Kassir kirgan bo'lib qoladi:
         # login-parol qayta so'ralmaydi, «SMENA OCHISH» tugmasi chiqadi.
         # Boshqa kassir kirishi kerak bo'lsa — o'sha ekrandagi «Chiqish».
