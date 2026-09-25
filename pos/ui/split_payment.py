@@ -15,6 +15,13 @@ bu oynaning klaviaturasida VERGUL bor — kassir 6001,20 deb tera oladi,
 «QOLGANINI» esa qolgan summani tiyinigacha aniq qo'yadi (6001,20).
 «Qoldi»/«Qaytim» tiyinni yashirmaydi — aks holda «QOLDI 0» deb turib
 YAKUNLASH yonmas edi.
+
+Qolgan summa O'ZI tushadi (2026-09-25, egasining so'rovi): kassir naqdga
+10 000 teradi, keyin UzCard qatoriga bosadi — qolgan 12 500,55 o'zi
+tushadi. Bunday «avto» qator bitta bo'ladi va boshqa qatorlar o'zgarsa
+o'zi moslashadi; ustidan raqam terilsa — summa almashadi (qo'shilmaydi)
+va qator oddiy (qo'lda yozilgan) bo'lib qoladi. Kassir qo'lda yozgan
+summaga dastur hech qachon tegmaydi.
 """
 
 from __future__ import annotations
@@ -63,6 +70,11 @@ class _Row(QPushButton):
         row.setContentsMargins(18, 0, 18, 0)
         self.name_label = _label(name, 18, t.INK, bold=True)
         row.addWidget(self.name_label)
+        # «qolgani» — summa o'zi tushganini bildiradi (ustidan tersa almashadi)
+        self.hint_label = _label(tr("qolgani"), 13, t.ACCENT, bold=True)
+        self.hint_label.hide()
+        row.addSpacing(10)
+        row.addWidget(self.hint_label)
         row.addStretch(1)
         self.amount_label = _label("—", 22, t.MUTED, bold=True)
         self.amount_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -80,6 +92,9 @@ class _Row(QPushButton):
     def set_selected(self, selected: bool) -> None:
         self.setChecked(selected)
         self._paint(selected)
+
+    def set_auto(self, on: bool) -> None:
+        self.hint_label.setVisible(on)
 
     def set_amount(self, tiyin: int) -> None:
         if tiyin > 0:
@@ -110,6 +125,8 @@ class SplitPaymentDialog(QDialog):
         #: Har qator uchun terilgan summa (matn, so'm; vergul bilan tiyin:
         #: "6001,20") — kod bo'yicha
         self.typed: dict[str, str] = {m["code"]: "" for m in self.methods}
+        #: Qolgan summa o'zi tushgan («avto») qator — ko'pi bilan bittasi
+        self.auto_code: str | None = None
         self.selected: str = self.methods[0]["code"] if self.methods else ""
         #: Natija — YAKUNLASH bosilganda to'ldiriladi
         self.parts: list[PaymentPart] = []
@@ -158,7 +175,7 @@ class SplitPaymentDialog(QDialog):
         col.setSpacing(10)
 
         hint = _label(
-            tr("Qatorga bosing, summani tering. «QOLGANINI» — qolgan summani qo'yadi."),
+            tr("Qatorga bosing — qolgan summa o'zi tushadi. Boshqa summa kerak bo'lsa, ustidan tering."),
             13, t.MUTED,
         )
         hint.setWordWrap(True)
@@ -256,48 +273,100 @@ class SplitPaymentDialog(QDialog):
 
     # ------------------------------------------------------------ harakat
 
+    def _amount(self, code: str) -> int:
+        return self.to_tiyin(self.typed.get(code, ""))
+
+    def _rebalance(self) -> None:
+        """Avto qator doim qolgan summaga teng (manfiy bo'lsa — bo'sh)."""
+        code = self.auto_code
+        if not code:
+            return
+        rest = self.total - self._other_sum(code)
+        self.typed[code] = self.to_text(rest) if rest > 0 else ""
+
+    def _start_typing(self) -> str:
+        """Tanlangan qatorga terish boshlandi. Avto summa ustidan terilsa —
+        u ALMASHADI (qo'shilmaydi) va qator qo'lda yozilganga aylanadi."""
+        code = self.selected
+        if code == self.auto_code:
+            self.typed[code] = ""
+            self.auto_code = None
+        return code
+
     def select(self, code: str) -> None:
+        """Qatorni tanlaydi. Qator bo'sh bo'lsa va to'lanmagan summa qolgan
+        bo'lsa — o'sha summa shu qatorga O'ZI tushadi (tiyinigacha)."""
         self.selected = code
+        if self._amount(code) == 0:
+            rest = self.total - self._other_sum(code)
+            if rest > 0:
+                self.typed[code] = self.to_text(rest)
+                self.auto_code = code
         self.refresh()
 
     def on_digit(self, value: str) -> None:
         if not self.selected:
             return
-        cur = self.typed.get(self.selected, "")
+        code = self._start_typing()
+        cur = self.typed.get(code, "")
         whole, comma, frac = cur.partition(",")
         if comma:
             # Verguldan keyin ko'pi bilan 2 raqam (tiyin)
-            self.typed[self.selected] = whole + "," + (frac + value)[:2]
+            self.typed[code] = whole + "," + (frac + value)[:2]
         elif len(whole) + len(value) <= 9:
-            self.typed[self.selected] = (whole + value).lstrip("0") or "0"
+            self.typed[code] = (whole + value).lstrip("0") or "0"
+        self._rebalance()
         self.refresh()
 
     def on_comma(self) -> None:
         """Vergul — tiyin terish uchun (6001,20). Ikkinchi vergul e'tiborsiz."""
         if not self.selected:
             return
-        cur = self.typed.get(self.selected, "")
+        code = self._start_typing()
+        cur = self.typed.get(code, "")
         if "," not in cur:
-            self.typed[self.selected] = (cur or "0") + ","
+            self.typed[code] = (cur or "0") + ","
+        self._rebalance()
         self.refresh()
 
     def on_backspace(self) -> None:
         if self.selected:
-            self.typed[self.selected] = self.typed.get(self.selected, "")[:-1]
+            code = self.selected
+            if code == self.auto_code:
+                self.auto_code = None      # endi qo'lda tahrirlanmoqda
+            self.typed[code] = self.typed.get(code, "")[:-1]
+            self._rebalance()
         self.refresh()
 
     def on_clear(self) -> None:
         if self.selected:
-            self.typed[self.selected] = ""
+            code = self.selected
+            if code == self.auto_code:
+                self.auto_code = None
+            self.typed[code] = ""
+            self._rebalance()
         self.refresh()
 
     def put_rest(self) -> None:
-        """Tanlangan qatorga hali yopilmagan summani qo'yadi — tiyinigacha
-        (16 001,20 so'mlik chekni 16 001 deb qo'ysak 20 tiyin ochiq qolardi)."""
+        """«QOLGANINI»: tanlangan qatorga qolgan summani qo'yadi — tiyinigacha
+        (16 001,20 so'mlik chekni 16 001 deb qo'ysak 20 tiyin ochiq qolardi).
+
+        Boshqa qatorga avto tushgan summa bo'lsa — u shu qatorga KO'CHADI
+        (kassir fikrini o'zgartirdi: «Humo emas, Click»)."""
         if not self.selected:
             return
-        rest = self.total - self._other_sum(self.selected)
-        self.typed[self.selected] = self.to_text(rest) if rest > 0 else ""
+        code = self.selected
+        if self.auto_code and self.auto_code != code:
+            self.typed[self.auto_code] = ""
+            self.auto_code = None
+        rest = self.total - self._other_sum(code)
+        if rest > 0:
+            self.typed[code] = self.to_text(rest)
+            self.auto_code = code
+        else:
+            self.typed[code] = ""
+            if self.auto_code == code:
+                self.auto_code = None
         self.refresh()
 
     def _finish(self) -> None:
@@ -315,6 +384,7 @@ class SplitPaymentDialog(QDialog):
             row = self.rows[e.method]
             row.set_amount(e.amount)
             row.set_selected(e.method == self.selected)
+            row.set_auto(e.method == self.auto_code and e.amount > 0)
 
         res = self.result()
         if res.error:
@@ -327,8 +397,11 @@ class SplitPaymentDialog(QDialog):
             self._status(tr("HAMMASI YOPILDI"), som(0), t.ACCENT)
 
         self.finish.setEnabled(res.ok)
+        sel = self.selected
+        movable = bool(self.auto_code and self.auto_code != sel
+                       and self._amount(self.auto_code) > 0)
         self.rest_btn.setEnabled(
-            bool(self.selected) and self.total - self._other_sum(self.selected) > 0
+            bool(sel) and (self.total - self._other_sum(sel) > 0 or movable)
         )
 
     def _status(self, title: str, value: str, bg: str) -> None:
