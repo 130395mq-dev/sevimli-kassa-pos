@@ -171,6 +171,45 @@ class LoginScreenResumeTest(unittest.TestCase):
         s.resume_logout.click()
         self.assertEqual(got, ["resume", "logout"])  # tasdiqdan keyin chiqdi
 
+    def test_smena_cheki_tugmasi_burchakda(self):
+        from PySide6.QtWidgets import QPushButton
+
+        s = self.screen()
+        got = []
+        s.shift_receipts_requested.connect(lambda: got.append("cheklar"))
+        s.open_resume("N")
+        self.assertTrue(s.resume_receipts.isVisibleTo(s))
+        s.resume_receipts.click()
+        self.assertEqual(got, ["cheklar"])
+        self.assertTrue(s.resume_logout.isVisibleTo(s))
+        # Login-parol rejimida (kassir kirmagan) — ikkalasi ham ko'rinmaydi
+        s.open()
+        self.assertFalse(s.resume_receipts.isVisibleTo(s))
+        self.assertFalse(s.resume_logout.isVisibleTo(s))
+        # «Dasturni yopish» tugmasi yo'q
+        texts = [b.text() for b in s.findChildren(QPushButton)]
+        self.assertNotIn("Dasturni yopish", texts)
+
+    def test_smena_cheki_oynasida_qayta_chop(self):
+        from .ui.dialogs import ReceiptDialog
+
+        calls = []
+
+        def again():
+            calls.append(1)
+            return "Chek qayta chop etildi"
+
+        d = ReceiptDialog("Z-HISOBOT", True, "x.txt", None, on_reprint=again)
+        self.assertIn("Qayta chop etish", d.note.text())
+        d.reprint.click()
+        d.reprint.click()
+        self.assertEqual(len(calls), 2)            # necha marta kerak bo'lsa
+        self.assertEqual(d.note.text(), "Chek qayta chop etildi")
+        # Tugmasiz (eski chaqiruv) ham ishlaydi
+        plain = ReceiptDialog("Z", False, "y.txt", None)
+        self.assertIsNone(plain.reprint)
+        d.deleteLater(); plain.deleteLater()
+
     def test_xato_xabari_kirish_ekranida(self):
         s = self.screen()
         s.open()
