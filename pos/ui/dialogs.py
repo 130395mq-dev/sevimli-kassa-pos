@@ -1194,9 +1194,10 @@ class HistoryDialog(BaseDialog):
         for r in self._rows:
             no = r.get("check_no")
             # Raqam terilgan bo'lsa — faqat mos chek raqamlari
-            if q and q not in str(r.get("receipt_number") or no or ""):
+            from ..history import receipt_label
+            no_txt = receipt_label(r.get("payload") or {"receipt_number": r.get("receipt_number")}, no)
+            if q and q.upper() not in no_txt.upper():
                 continue
-            no_txt = r.get("receipt_number") or (f"SK-{no}" if no is not None else "—")
             pref = "↩ " if r.get("is_return") else ""
             text = (
                 f"{pref}№ {no_txt}    ·    {r.get('time', '')}"

@@ -86,14 +86,16 @@ class BarcodeTest(unittest.TestCase):
         self.assertEqual(scan.weight, Decimal("0.734"))
         self.assertIsNone(scan.price)
 
-    def test_narx_kodi(self):
-        # 21 + PLU 00123 + 01250 so'm
-        code = self.ean("210012301250")
-        scan = parse(code)
-        self.assertTrue(scan.is_scale)
-        self.assertEqual(scan.plu, 123)
-        self.assertEqual(scan.price, 1_250_00)
-        self.assertIsNone(scan.weight)
+    def test_21_22_23_24_tarozi_kodi_emas(self):
+        """2026-09-28: Sevimli'da tarozi faqat 29. 21… — donali tovar kodlari;
+        kassa3'da 21 li zavod kodi «narxli yorliq» deb o'qilib, noto'g'ri
+        tovar sotilgan. Endi bunday kod tarozi deb taxmin qilinmaydi."""
+        for prefix in ("21", "22", "23", "24"):
+            scan = parse(self.ean(prefix + "0012301250"))
+            self.assertFalse(scan.is_scale, prefix)
+            self.assertIsNone(scan.plu)
+            self.assertIsNone(scan.price)
+            self.assertIsNone(scan.weight)
 
     def test_buzuq_nazorat_raqami_tarozi_deb_qabul_qilinmaydi(self):
         """Noto'g'ri vazn bilan sotgandan ko'ra «topilmadi» yaxshi."""

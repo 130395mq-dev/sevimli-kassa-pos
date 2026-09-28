@@ -22,6 +22,31 @@ from .money import line_total, qty_str
 COPY_MARK = "* NUSXA (qayta chop etildi) *"
 
 
+#: Kassa chek MoySklad'ga yetguncha qo'yadigan vaqtinchalik yozuv
+PENDING_NUMBER = "MoySklad: kutilmoqda"
+
+
+def receipt_label(payload: dict, check_no=None) -> str:
+    """Qayta chop etilgan chekdagi raqam — DOIM bo'lsin (2026-09-28, egasi).
+
+    Ilgari raqam faqat MoySklad darhol javob bergan bo'lsa saqlanardi;
+    aks holda nusxada «MoySklad: kutilmoqda» qolib ketardi va chekni
+    panel/logdan topib bo'lmasdi. Tartib:
+      1) MoySklad raqami (ОТ-…), bor bo'lsa;
+      2) server chek raqami «SK-<id>» (panel tarixidagi bilan bir xil);
+      3) yuborilmagan chek — «Yuborilmagan 9D957ADC» (local_uuid boshi;
+         panelda va server logida shu belgi bilan topiladi).
+    Faqat ASCII — printer cp866 da boshqa belgini buzadi.
+    """
+    number = str(payload.get("receipt_number") or "").strip()
+    if number and number != PENDING_NUMBER:
+        return number
+    if check_no not in (None, ""):
+        return f"SK-{check_no}"
+    short = str(payload.get("local_uuid") or "")[:8].upper()
+    return f"Yuborilmagan {short}".strip()
+
+
 def local_when(raw: str, tz: tzinfo | None = None) -> datetime:
     """Saqlangan vaqt (ISO, odatda UTC) → mahalliy vaqt.
 
@@ -45,7 +70,8 @@ def local_hhmm(raw: str, tz: tzinfo | None = None) -> str:
 
 def render_history_sale(payload: dict, *, market: str, point: str,
                         cashier: str, shift_no, methods: list[dict],
-                        width: int, tz: tzinfo | None = None) -> str:
+                        width: int, tz: tzinfo | None = None,
+                        check_no=None) -> str:
     """Lokal outbox payloadidan asl raqam/summa bilan chek chizadi.
 
     Qaytarish cheki (`kind == "return"`) alohida chiziladi — savdo cheki
@@ -56,6 +82,7 @@ def render_history_sale(payload: dict, *, market: str, point: str,
         return render_history_return(
             payload, market=market, point=point, cashier=cashier,
             shift_no=shift_no, methods=methods, width=width, tz=tz,
+            check_no=check_no,
         )
     items = payload.get("items") or []
     payments = payload.get("payments") or []
@@ -76,7 +103,7 @@ def render_history_sale(payload: dict, *, market: str, point: str,
         point=point,
         cashier=cashier,
         shift_no=shift_no,
-        number=payload.get("receipt_number") or "MoySklad: kutilmoqda",
+        number=receipt_label(payload, check_no),
         when=when,
         items=[
             SaleItem(
@@ -110,7 +137,7 @@ def render_history_sale(payload: dict, *, market: str, point: str,
 def render_history_return(payload: dict, *, market: str, point: str,
                           cashier: str, shift_no, methods: list[dict],
                           width: int, tz: tzinfo | None = None,
-                          copy: bool = True) -> str:
+                          copy: bool = True, check_no=None) -> str:
     """Qaytarish cheki: qaysi tovar, qancha, qaysi usulda qaytarildi.
     Savdo chekidan farqli — «QAYTARISH» deb aniq yozilgan.
 
@@ -123,7 +150,7 @@ def render_history_return(payload: dict, *, market: str, point: str,
     total = int(payload.get("net_total") or payload.get("gross_total")
                 or sum(int(p.get("amount") or 0) for p in payments))
     when = local_when(str(payload.get("created_at") or ""), tz)
-    number = payload.get("receipt_number") or "MoySklad: kutilmoqda"
+    number = receipt_label(payload, check_no)
     origin = payload.get("origin_number") or ""
 
     out: list[str] = []

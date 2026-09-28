@@ -11,11 +11,10 @@ Ikki xil kod keladi:
        │ │     │     └─ nazorat raqami
        │ │     └─────── vazn (gramm) yoki narx (so'm)
        │ └───────────── PLU — tovar raqami tarozida
-       └─────────────── prefiks: 29 = vazn (Sevimli), 21 = narx
+       └─────────────── prefiks: 29 = vazn (Sevimli — yagona tarozi prefiksi)
 
-   Prefiks tarozida sozlanadi. Sizda hozir qaysi biri turgani
-   **TEKSHIRILMAGAN** — birinchi sinovda tarozidan bitta yorliq
-   bosib, shu yerdagi `parse` natijasini solishtirish kerak.
+   Sevimli tarozilari 29 prefiksiga sozlangan (egasi, 2026-09-28).
+   Narxli yorliq (21/24) ishlatilmaydi — 21… kodlar donali tovarlarniki.
 
 Nazorat raqami tekshiriladi. Skaner ba'zan yarim o'qiydi, va noto'g'ri
 vazn — bu noto'g'ri pul.
@@ -36,8 +35,18 @@ from decimal import Decimal
 # shunday kod tarozi deb o'qilib, donali tovar kilo bilan sotilgan.
 # MoySklad bilan ishlaydigan do'konda 20 prefiksini tarozi uchun ishlatib
 # bo'lmaydi; tarozi 20 ga sozlangan bo'lsa — uni 29 ga o'tkazish kerak.
-WEIGHT_PREFIXES = ("22", "23", "29")
-PRICE_PREFIXES = ("21", "24")
+#
+# FAQAT «29» (2026-09-28, kassa3 hodisasi). Sevimli'da kiloli tovar yorlig'i
+# faqat 29 bilan boshlanadi (egasi tasdiqlagan). 21 bilan boshlanadigan
+# kodlar esa DONALI tovarlarning zavod/MoySklad kodlari. Ilgari 21/24 «narxli
+# yorliq» deb o'qilardi: katalogda yo'q zavod kodi (jo'ja) PLU'si tasodifan
+# mos kelgan «колбаса ТК SEVIMLI»ga aylanib, kod ichidagi raqamlar narx deb
+# olingan (1 032 so'm) — noto'g'ri tovar noto'g'ri miqdorda sotilgan. 22/23
+# ham ishlatilmaydi. Endi katalogda bo'lmagan 21/22/23/24 kod — «topilmadi».
+# Katalogdagi 21… donali kodlar avvalgidek aniq moslik bilan topiladi
+# (hub.find_by_barcode 1-qadam, tarozi taxminidan oldin).
+WEIGHT_PREFIXES = ("29",)
+PRICE_PREFIXES: tuple[str, ...] = ()
 
 # Ishonchlilik chegaralari. Do'kon tarozisi 50 kg dan og'ir yorliq
 # bosmaydi; PLU 0 bo'lmaydi. Bundan tashqarisi — tarozi kodi emas, balki

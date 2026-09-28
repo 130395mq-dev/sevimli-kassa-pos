@@ -905,6 +905,7 @@ def main() -> int:
                 cashier=(session.get("cashier") or {}).get("name", ""),
                 shift_no=sh.get("number", "—"), methods=backend.methods,
                 width=config.receipt_width,
+                check_no=row.get("check_no"),   # raqam doim chiqsin (2026-09-28)
             )
             printed, path = printer.print_sale(
                 text, config.printer, config.paper, config.receipt_width,

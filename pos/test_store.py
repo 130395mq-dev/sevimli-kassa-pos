@@ -586,6 +586,7 @@ class BarcodeLookupTest(unittest.TestCase):
     """
 
     MS_CODE = "2000003296927"  # haqiqiy holat: MoySklad yaratgan, nazorat raqami to'g'ri
+    CODE_21 = "2147800001238"  # 21 bilan boshlanadigan donali tovar kodi (nazorat raqami to'g'ri)
 
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -606,6 +607,10 @@ class BarcodeLookupTest(unittest.TestCase):
              # Upakovka (MoySklad «Упаковка»): 6 talik blok kodi
              "packs": [{"barcode": "14780001000014", "quantity": 6}],
              "price": 2_000_00, "is_weight": False, "plu": None, "tracked": False, "stock": 40},
+            # 21 bilan boshlanadigan DONALI tovar kodi (katalogda bor)
+            {"id": 13, "ms_id": "ms-13", "name": "Sut 1 l", "code": "S99",
+             "barcode": self.CODE_21, "price": 12_000_00, "is_weight": False,
+             "plu": None, "tracked": False, "stock": 10},
         ])
         self.backend = LiveBackend(FakeHub(), self.store, METHODS)
 
@@ -618,23 +623,24 @@ class BarcodeLookupTest(unittest.TestCase):
         total = sum(int(d) * (3 if i % 2 else 1) for i, d in enumerate(body12))
         return body12 + str((10 - total % 10) % 10)
 
-    def test_narxli_yorliq_miqdori_grammgacha(self):
-        """I02: 14 596 so'm ÷ 95 000 so'm/kg = 0,15364… kg — server 3 xonadan
-        ko'p kasrni rad etardi (kassa3 cheki tiqilib qolgan). Endi 0,154 kg."""
-        found = self.backend.find_by_barcode(self._ean("210012314596"))
-        self.assertIsNotNone(found)
-        product, qty = found
-        self.assertEqual(product.name, "Go'sht")
-        self.assertEqual(qty, Decimal("0.154"))
-        self.assertEqual(qty, qty.quantize(Decimal("0.001")))
+    def test_katalogda_yoq_21_kod_topilmadi_tarozi_emas(self):
+        """Kassa3 hodisasi (27.09 16:28): katalogda yo'q 21… zavod kodi PLU'si
+        mos tovarga «narxli yorliq» bo'lib tushgan edi. Endi — topilmadi."""
+        self.assertIsNone(self.backend.find_by_barcode(self._ean("210012314596")))
+        self.assertIsNone(self.backend.find_by_barcode(self._ean("210012301032")))
+        for prefix in ("22", "23", "24"):
+            self.assertIsNone(self.backend.find_by_barcode(self._ean(prefix + "0012300734")))
 
-    def test_narxli_yorliq_asl_vaznni_qaytaradi(self):
-        """Tarozi summani vazn × narx dan chiqaradi: 0,734 kg × 95 000 = 69 730
-        so'm → miqdor aynan 0,734 kg, summa yorliq bilan bir xil."""
-        from pos.money import line_total
-        product, qty = self.backend.find_by_barcode(self._ean("210012369730"))
+    def test_katalogdagi_21_kod_donali_tovar_1_dona(self):
+        """21 bilan boshlanadigan donali kodlar o'qilaveradi (aniq moslik)."""
+        product, qty = self.backend.find_by_barcode(self.CODE_21)
+        self.assertEqual(product.name, "Sut 1 l")
+        self.assertEqual(qty, Decimal(1))
+
+    def test_29_tarozi_kodi_kilo_bilan(self):
+        product, qty = self.backend.find_by_barcode(self._ean("290012300734"))
+        self.assertEqual(product.name, "Go'sht")
         self.assertEqual(qty, Decimal("0.734"))
-        self.assertEqual(line_total(product.price, qty), 69_730_00)
 
     def test_label_quantity_chegaralari(self):
         from pos.money import label_quantity
@@ -886,6 +892,36 @@ class HistoryNumberTest(unittest.TestCase):
         self.assertIn("Qaytim", text)
         self.assertTrue(text.startswith(" ") or text.startswith("NUSXA"))
         self.assertIn("NUSXA", text.splitlines()[0])   # tepasida nusxa belgisi
+
+    def test_qayta_chop_etishda_raqam_doim_chiqadi(self):
+        """2026-09-28 (egasi): kassa3 nusxasida «Chek #MoySklad: kutilmoqda»
+        chiqqan — chekni hech yerdan topib bo'lmasdi. Endi raqam doim bor."""
+        from .history import receipt_label, render_history_sale
+
+        base = {"local_uuid": "9d957adc-32c6-4935-bf3d-58bf9cd100e0",
+                "created_at": "2026-09-27T11:28:00+00:00", "gross_total": 100000,
+                "items": [{"name": "Non", "quantity": "1", "price": 100000,
+                           "total": 100000}],
+                "payments": [{"method": "naqd", "amount": 100000}]}
+        # Yuborilmagan: UUID boshi (panel/logdagi bilan bir xil)
+        self.assertEqual(receipt_label(base), "Yuborilmagan 9D957ADC")
+        text = render_history_sale(base, market="Sevimli", point="", cashier="Ali",
+                                   shift_no=18, methods=METHODS, width=48)
+        self.assertIn("Yuborilmagan 9D957ADC", text)
+        self.assertNotIn("kutilmoqda", text)
+        # Serverga yetgan, MoySklad raqami hali yo'q — server raqami
+        pending = dict(base, receipt_number="MoySklad: kutilmoqda")
+        self.assertEqual(receipt_label(pending, 15), "SK-15")
+        self.assertIn("SK-15", render_history_sale(
+            pending, market="Sevimli", point="", cashier="Ali", shift_no=18,
+            methods=METHODS, width=48, check_no=15))
+        # MoySklad raqami bor — o'sha
+        self.assertEqual(receipt_label(dict(base, receipt_number="ОТ-0208"), 15), "ОТ-0208")
+        # Qaytarish nusxasi ham
+        ret = dict(base, kind="return", net_total=100000)
+        self.assertIn("SK-16", render_history_sale(
+            ret, market="Sevimli", point="", cashier="Ali", shift_no=18,
+            methods=METHODS, width=48, check_no=16))
 
     def test_tarix_vaqti_mahalliy(self):
         """Outbox'da UTC (09:54+00:00) — Toshkentda 14:54 ko'rinsin."""
