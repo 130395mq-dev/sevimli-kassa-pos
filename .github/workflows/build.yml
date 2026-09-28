@@ -136,9 +136,7 @@ jobs:
           }
 
       - name: Publish verified Windows build
-        # Faqat main'dan (audit N01): boshqa branch'dan chiqqan Release ham
-        # «eng so'nggi» bo'lib qolib, kassalarga tarqalib ketardi.
-        if: steps.tag.outputs.new == 'true' && github.ref == 'refs/heads/main'
+        if: steps.tag.outputs.new == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
