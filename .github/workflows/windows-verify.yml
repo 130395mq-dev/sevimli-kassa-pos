@@ -1,0 +1,237 @@
+name: Windows tekshiruv (Release'siz)
+
+# Audit 2026-09-28. Bitta sinov kassaga qo'lda qo'yish uchun EXE yig'adi va
+# Windows'da tekshiradi. BU WORKFLOW HECH NARSA TARQATMAYDI:
+#   * token faqat o'qish huquqida (permissions: contents: read) — Release,
+#     teg yoki push qilib bo'lmaydi; `gh release create` yo'q;
+#   * natija faqat Actions artifact (14 kun). Server (sales/releases.py)
+#     faqat GitHub'dagi /releases/latest ni o'qiydi — artifact'ni ko'rmaydi,
+#     ya'ni kassalar uni avtomatik olmaydi.
+# Umumiy chiqarish (build.yml, faqat main push) bu fayldan mustaqil.
+#
+# Tekshiruvlar (hammasi runner'ning vaqtinchalik papkalarida, haqiqiy
+# server/MoySklad/kassa bazasiga ulanmaydi):
+#   1. Kassa testlari Windows'da.
+#   2. Lokal baza: eski (v1.18.6) -> yangi -> eski, navbat saqlanadi.
+#   3. EXE yig'ish (build.yml bilan bir xil: PyInstaller 6.11.1, onedir).
+#   4. Yangi EXE ishga tushadi (sog'liq bayrog'i, jarayon tirik), eski
+#      navbatli bazani ochadi, keyin v1.18.6 EXE ustiga qaytariladi
+#      (orqaga qaytish) — navbat o'z joyida.
+#   5. tools/avto_yuklash.ps1: lokal «GitHub» (bare repo) bilan — main'ga
+#      yubormaydi, maxfiy fayl va 200+ faylda to'xtaydi, qayta klonda ham push.
+
+on:
+  push:
+    branches: ["audit-**", "sinov/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows — testlar, EXE, baza, orqaga qaytish, avto_yuklash
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      BASELINE_TAG: v1.18.6
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Kutubxonalar
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller==6.11.1
+
+      - name: 1. Kassa testlari (Windows)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m unittest pos.test_pos pos.test_store pos.test_links pos.test_update pos.test_split pos.test_session pos.test_reliability pos.test_receipt_integrity
+          python -m shared.test_receipt
+
+      - name: 2. Lokal baza — eski -> yangi -> eski, navbat
+        shell: pwsh
+        run: |
+          $old = Join-Path $env:RUNNER_TEMP 'old'
+          New-Item -ItemType Directory -Force -Path $old | Out-Null
+          git archive $env:BASELINE_TAG pos shared | tar -x -C $old
+          if ($LASTEXITCODE -ne 0) { throw "eski kod olinmadi" }
+          python tools/ci_db_check.py --old $old
+          if ($LASTEXITCODE -ne 0) { throw "baza tekshiruvi yiqildi" }
+
+      - name: UCRT (eski Windows uchun)
+        shell: pwsh
+        run: |
+          if (Test-Path "build\ucrt.zip") {
+            Expand-Archive -Path "build\ucrt.zip" -DestinationPath "build\ucrt" -Force
+          }
+
+      - name: Inter shrifti (bo'lmasa Segoe UI ishlaydi)
+        shell: pwsh
+        continue-on-error: true
+        run: python pos/fonts/fetch_inter.py
+
+      - name: 3. Yig'ish (onedir)
+        run: pyinstaller build/SevimliKassa.spec --noconfirm --clean
+
+      - name: ZIP va SHA-256
+        id: zip
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist\SevimliKassa\SevimliKassa.exe")) { throw "SevimliKassa.exe yig'ilmadi" }
+          $v = (Select-String -Path "pos\version.py" -Pattern 'VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          Compress-Archive -Path dist/SevimliKassa -DestinationPath "dist/SevimliKassa-$v-SINOV.zip" -Force
+          $h = (Get-FileHash "dist/SevimliKassa-$v-SINOV.zip" -Algorithm SHA256).Hash.ToLower()
+          "$h  SevimliKassa-$v-SINOV.zip" | Out-File -Encoding ascii "dist/SevimliKassa-$v-SINOV.zip.sha256"
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Versiya $v, SHA-256 $h"
+
+      - name: 4. EXE ishga tushadi, navbatli bazani ochadi, eski versiyaga qaytadi
+        shell: pwsh
+        env:
+          NEW_VERSION: ${{ steps.zip.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Alohida APPDATA/LOCALAPPDATA — runner'ning o'zidagi hech narsaga tegmaymiz
+          $sandbox = Join-Path $env:RUNNER_TEMP 'kassa-sandbox'
+          $env:APPDATA = Join-Path $sandbox 'Roaming'
+          $env:LOCALAPPDATA = Join-Path $sandbox 'Local'
+          $data = Join-Path $env:APPDATA 'SevimliKassa'
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          # Ulanmaydigan server va soxta token: kassa oflayn rejimda ochiladi
+          '{"server_url": "http://127.0.0.1:9", "token": "ci-dummy-not-a-real-token"}' |
+            Out-File -Encoding utf8NoBOM (Join-Path $data 'config.json')
+          python tools/ci_db_check.py --old (Join-Path $env:RUNNER_TEMP 'old') --seed (Join-Path $data 'kassa.db')
+
+          function Start-Kassa($exe, $expect) {
+            $flag = Join-Path $data 'update\run-ok'
+            Remove-Item $flag -ErrorAction SilentlyContinue
+            Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe)
+            $ok = $false
+            for ($i = 0; $i -lt 90; $i++) {
+              Start-Sleep -Seconds 1
+              if ((Test-Path $flag) -and ((Get-Content $flag -Raw).Trim() -eq $expect)) { $ok = $true; break }
+            }
+            if (-not $ok) { Get-Content (Join-Path $data 'kassa.log') -Tail 40 -ErrorAction SilentlyContinue; throw "$expect ishga tushmadi (run-ok yo'q)" }
+            Start-Sleep -Seconds 15      # Qt oynasi va fon oqimlari ochilsin
+            $p = Get-Process SevimliKassa -ErrorAction SilentlyContinue
+            if (-not $p) { Get-Content (Join-Path $data 'kassa.log') -Tail 40 -ErrorAction SilentlyContinue; throw "$expect ochilib yopilib qoldi" }
+            Write-Host "OK: $expect ishlayapti (pid $($p.Id -join ','))"
+            Stop-Process -Name SevimliKassa -Force     # keskin to'xtatish (tok o'chgandek)
+            Start-Sleep -Seconds 3
+          }
+
+          # 4a. Yangi versiya: o'zini LOCALAPPDATA\SevimliKassa ga o'rnatadi va ochiladi
+          Start-Kassa (Resolve-Path 'dist\SevimliKassa\SevimliKassa.exe') $env:NEW_VERSION
+          $installed = Join-Path $env:LOCALAPPDATA 'SevimliKassa\SevimliKassa.exe'
+          if (-not (Test-Path $installed)) { throw "o'rnatilgan nusxa yo'q: $installed" }
+          python tools/ci_db_check.py --verify (Join-Path $data 'kassa.db')
+          if ($LASTEXITCODE -ne 0) { throw "yangi versiyadan keyin navbat buzildi" }
+
+          # 4b. Orqaga qaytish: v1.18.6 ZIP'i (GitHub Release) ishga tushiriladi —
+          # u o'zini o'rnatilgan papka ustiga qayta o'rnatadi (qo'lda rollback yo'li)
+          $oldZip = Join-Path $env:RUNNER_TEMP 'old.zip'
+          gh release download $env:BASELINE_TAG -p SevimliKassa.zip -O $oldZip
+          if ($LASTEXITCODE -ne 0) { throw "eski ZIP yuklanmadi" }
+          $oldDir = Join-Path $env:RUNNER_TEMP 'old-exe'
+          Expand-Archive $oldZip -DestinationPath $oldDir -Force
+          $oldExe = Get-ChildItem $oldDir -Recurse -Filter SevimliKassa.exe | Select-Object -First 1
+          Start-Kassa $oldExe.FullName ($env:BASELINE_TAG.TrimStart('v'))
+          python tools/ci_db_check.py --verify (Join-Path $data 'kassa.db')
+          if ($LASTEXITCODE -ne 0) { throw "eski versiyaga qaytgach navbat buzildi" }
+
+          # 4c. Yana yangi versiyaga (qayta yangilash) — navbat baribir joyida
+          Start-Kassa (Resolve-Path 'dist\SevimliKassa\SevimliKassa.exe') $env:NEW_VERSION
+          python tools/ci_db_check.py --verify (Join-Path $data 'kassa.db')
+          if ($LASTEXITCODE -ne 0) { throw "qayta yangilashdan keyin navbat buzildi" }
+          Get-Content (Join-Path $data 'kassa.log') -Tail 25 -ErrorAction SilentlyContinue
+
+      - name: 5. avto_yuklash.ps1 — lokal «GitHub» bilan
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'C:\Sevimli'
+          if (Test-Path $root) { throw "C:\Sevimli runner'da bo'lmasligi kerak edi" }
+          $remote = Join-Path $env:RUNNER_TEMP 'remote-kassa.git'
+          git init -q --bare $remote
+          $seed = Join-Path $env:RUNNER_TEMP 'seed'
+          git init -q -b main $seed
+          New-Item -ItemType Directory -Force -Path "$seed\pos" | Out-Null
+          'VERSION = "1.0.0"' | Out-File -Encoding utf8NoBOM "$seed\pos\version.py"
+          'print(1)' | Out-File -Encoding utf8NoBOM "$seed\pos\a.py"
+          git -C $seed -c user.name=ci -c user.email=ci@example.invalid add -A
+          git -C $seed -c user.name=ci -c user.email=ci@example.invalid commit -q -m boshlang
+          git -C $seed push -q $remote main
+          $mainBefore = (git --git-dir $remote rev-parse refs/heads/main)
+
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          git clone -q $remote "$root\kassa"
+          git -C "$root\kassa" config user.name ci
+          git -C "$root\kassa" config user.email ci@example.invalid
+          $script = (Resolve-Path 'tools\avto_yuklash.ps1').Path
+          $branch = ("avto/$($env:COMPUTERNAME)-kassa").ToLower()
+          function Age-Files { Get-ChildItem "$root\kassa" -Recurse -File -Force | Where-Object { $_.FullName -notmatch '\\\.git\\' } | ForEach-Object { $_.LastWriteTime = (Get-Date).AddMinutes(-10) } }
+          function Run-Avto { & pwsh -NoProfile -File $script; Get-Content "$root\avto_yuklash.log" -Tail 3 }
+          function Remote-Sha($ref) { $s = git --git-dir $remote rev-parse --verify -q $ref; if ($LASTEXITCODE -ne 0) { return '' }; return $s }
+
+          # A. Oddiy kod o'zgarishi -> avto/<kompyuter>-kassa branch'i, versiya oshadi, main tegilmaydi
+          'print(2)' | Out-File -Encoding utf8NoBOM "$root\kassa\pos\a.py"
+          Age-Files; Run-Avto
+          $a = Remote-Sha "refs/heads/$branch"
+          if (-not $a) { throw "A: branch yuborilmadi" }
+          if ((Remote-Sha 'refs/heads/main') -ne $mainBefore) { throw "A: main o'zgardi!" }
+          $v = git --git-dir $remote show "${a}:pos/version.py"
+          if ($v -notmatch '1\.0\.1') { throw "A: versiya oshmadi: $v" }
+          Write-Host "A OK: $branch = $a, versiya 1.0.1, main o'zgarmadi"
+
+          # B. Maxfiy fayl YANGI papka ichida (git status «?? papka/» deb
+          #    yashirardi) -> commit ham, push ham yo'q
+          New-Item -ItemType Directory -Force -Path "$root\kassa\sozlama" | Out-Null
+          'SECRET_KEY=ci-fake' | Out-File -Encoding utf8NoBOM "$root\kassa\sozlama\.env"
+          'print(3)' | Out-File -Encoding utf8NoBOM "$root\kassa\pos\a.py"
+          Age-Files; Run-Avto
+          if ((Remote-Sha "refs/heads/$branch") -ne $a) { throw "B: maxfiy fayl bilan push bo'ldi!" }
+          if (-not (Select-String "$root\avto_yuklash.log" -Pattern 'maxfiy' -Quiet)) { throw "B: logda sabab yo'q" }
+          $all = git --git-dir $remote log --all --name-only --format=
+          if ($all -match '\.env') { throw "B: .env masofaga tushgan!" }
+          Remove-Item "$root\kassa\sozlama" -Recurse -Force
+          Write-Host "B OK: papka ichidagi .env bilan to'xtadi"
+
+          # C. Qayta klon (kuzatuv ref'i yo'q) — aniq lease bilan push ishlaydi
+          git -C "$root\kassa" update-ref -d "refs/remotes/origin/$branch" 2>$null
+          Age-Files; Run-Avto
+          $c = Remote-Sha "refs/heads/$branch"
+          if ($c -eq $a) { throw "C: kuzatuv ref'isiz push bo'lmadi (stale info)" }
+          if ((Remote-Sha 'refs/heads/main') -ne $mainBefore) { throw "C: main o'zgardi!" }
+          Write-Host "C OK: $branch = $c"
+
+          # D. 200 dan ko'p fayl -> to'xtaydi
+          New-Item -ItemType Directory -Force -Path "$root\kassa\docs\ko'p" | Out-Null
+          1..205 | ForEach-Object { "x$_" | Out-File -Encoding utf8NoBOM "$root\kassa\docs\ko'p\f$_.txt" }
+          Age-Files; Run-Avto
+          if ((Remote-Sha "refs/heads/$branch") -ne $c) { throw "D: 205 fayl yuborildi!" }
+          Write-Host "D OK: 205 faylda to'xtadi"
+          if ((Remote-Sha 'refs/heads/main') -ne $mainBefore) { throw "main o'zgardi!" }
+          Write-Host "avto_yuklash: main hech qachon o'zgarmadi ($mainBefore)"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: SevimliKassa-${{ steps.zip.outputs.version }}-SINOV
+          path: |
+            dist/SevimliKassa-*-SINOV.zip
+            dist/SevimliKassa-*-SINOV.zip.sha256
+          retention-days: 14

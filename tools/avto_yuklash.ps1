@@ -96,7 +96,11 @@ try {
         }
 
         # --- 1. Shu kompyuterdagi o'zgarishlarni commit qilamiz
-        $changes = @(& $git status --porcelain 2>$null)
+        # --untracked-files=all: yangi PAPKA ham fayl-fayl ko'rinsin. Busiz
+        # «?? papka/» bitta qator bo'lib, ichidagi .env maxfiy-fayl tekshiruvidan
+        # va 200 fayl chegarasidan o'tib ketardi. quotepath=false: kirill nomlar
+        # «\320...» bo'lib buzilmasin.
+        $changes = @(& $git -c core.quotepath=false status --porcelain --untracked-files=all 2>$null)
         if ($changes.Count -gt 0) {
             # Yozish tugaganini kutamiz: eng yangi fayl 2 daqiqadan eski bo'lsin
             $newest = Get-ChildItem -Path $dir -Recurse -File -ErrorAction SilentlyContinue |
@@ -182,8 +186,12 @@ try {
         $headSha = (& $git rev-parse HEAD 2>$null)
         $remote = ((& $git ls-remote origin "refs/heads/$branch" 2>$null) -split '\s+')[0]
         if ($remote -eq $headSha) { continue }     # allaqachon yuborilgan
-        # Bu branch'ga faqat shu skript yozadi — --force-with-lease xavfsiz
-        $out = & $git push --force-with-lease origin "HEAD:refs/heads/$branch" 2>&1
+        # Bu branch'ga faqat shu skript yozadi. Lease ANIQ qiymat bilan: GitHub'da
+        # hozir turgan SHA ($remote; bo'sh = «branch hali yo'q»). Kuzatuv ref'iga
+        # (origin/avto/...) tayanilmaydi — u qayta klonlangan papkada bo'lmaydi va
+        # oddiy --force-with-lease «stale info» bilan har safar rad etilardi.
+        $lease = "refs/heads/${branch}:$remote"
+        $out = & $git push "--force-with-lease=$lease" origin "HEAD:refs/heads/$branch" 2>&1
         if ($LASTEXITCODE -eq 0) {
             Log "${name}: GitHub'ga ketdi -> $branch ($ahead ta commit). main'ga qo'shish uchun GitHub'da PR oching."
         }
