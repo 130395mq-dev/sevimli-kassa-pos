@@ -20,6 +20,13 @@ BODY = b"MZ" + b"\x00" * 1_200_000
 
 
 class _Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        # Consume the request body before replying. BaseHTTPRequestHandler's
+        # default 501 can reset a Windows connection with unread POST data.
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        self.send_response(401)
+        self.end_headers()
+
     def do_GET(self):
         if self.headers.get("Authorization") != "Bearer tok":
             self.send_response(401); self.end_headers(); return
@@ -47,6 +54,23 @@ class VersionTest(unittest.TestCase):
         self.assertEqual(version_key("v2.1"), (2, 1, 0))
 
 
+class TransportFailureTest(unittest.TestCase):
+    def test_connection_abort_is_retryable_hub_error(self):
+        from .hub import HubConnError
+        hub = Hub(Config(server_url="http://127.0.0.1:1", token="tok"))
+        with mock.patch("urllib.request.urlopen", side_effect=ConnectionAbortedError(10053, "aborted")):
+            with self.assertRaises(HubConnError):
+                hub.hello()
+
+    def test_reset_while_reading_is_retryable_hub_error(self):
+        from .hub import HubConnError
+        hub = Hub(Config(server_url="http://127.0.0.1:1", token="tok"))
+        with mock.patch("urllib.request.urlopen") as opening:
+            opening.return_value.__enter__.return_value.read.side_effect = ConnectionResetError(10054, "reset")
+            with self.assertRaises(HubConnError):
+                hub.hello()
+
+
 class DownloadTest(unittest.TestCase):
     def setUp(self):
         self.srv = HTTPServer(("127.0.0.1", 0), _Handler)
@@ -57,6 +81,7 @@ class DownloadTest(unittest.TestCase):
 
     def tearDown(self):
         self.srv.shutdown()
+        self.srv.server_close()
         self.dir.cleanup()
 
     def test_versiya_soraladi_va_sarlavha_ketadi(self):

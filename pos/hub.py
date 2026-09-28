@@ -148,6 +148,11 @@ class Hub:
             raise HubConnError(f"Serverga ulanib bo'lmadi: {e.reason}") from e
         except TimeoutError as e:
             raise HubConnError("Server javob bermadi") from e
+        except OSError as e:
+            # Windows can raise ConnectionAbortedError/ConnectionResetError
+            # directly while opening or reading a response, without URLError.
+            # Preserve the retryable/offline path used by callers.
+            raise HubConnError("Server bilan aloqa uzildi") from e
 
     # ------------------------------------------------------------ so'rovlar
 
