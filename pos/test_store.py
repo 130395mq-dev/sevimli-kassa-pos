@@ -613,6 +613,35 @@ class BarcodeLookupTest(unittest.TestCase):
         self.store.close()
         self.dir.cleanup()
 
+    @staticmethod
+    def _ean(body12: str) -> str:
+        total = sum(int(d) * (3 if i % 2 else 1) for i, d in enumerate(body12))
+        return body12 + str((10 - total % 10) % 10)
+
+    def test_narxli_yorliq_miqdori_grammgacha(self):
+        """I02: 14 596 so'm ÷ 95 000 so'm/kg = 0,15364… kg — server 3 xonadan
+        ko'p kasrni rad etardi (kassa3 cheki tiqilib qolgan). Endi 0,154 kg."""
+        found = self.backend.find_by_barcode(self._ean("210012314596"))
+        self.assertIsNotNone(found)
+        product, qty = found
+        self.assertEqual(product.name, "Go'sht")
+        self.assertEqual(qty, Decimal("0.154"))
+        self.assertEqual(qty, qty.quantize(Decimal("0.001")))
+
+    def test_narxli_yorliq_asl_vaznni_qaytaradi(self):
+        """Tarozi summani vazn × narx dan chiqaradi: 0,734 kg × 95 000 = 69 730
+        so'm → miqdor aynan 0,734 kg, summa yorliq bilan bir xil."""
+        from pos.money import line_total
+        product, qty = self.backend.find_by_barcode(self._ean("210012369730"))
+        self.assertEqual(qty, Decimal("0.734"))
+        self.assertEqual(line_total(product.price, qty), 69_730_00)
+
+    def test_label_quantity_chegaralari(self):
+        from pos.money import label_quantity
+        self.assertEqual(label_quantity(1_000_00, 3_000_00), Decimal("0.333"))
+        self.assertIsNone(label_quantity(1, 3_000_00))        # 1 grammdan kam
+        self.assertIsNone(label_quantity(1_000_00, 0))
+
     def test_moysklad_kodi_donali_tovar_1_dona(self):
         product, qty = self.backend.find_by_barcode(self.MS_CODE)
         self.assertEqual(product.name, "Shampun")

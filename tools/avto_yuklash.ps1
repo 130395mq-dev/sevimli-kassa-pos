@@ -9,8 +9,12 @@
 #                        versiya raqamini o'zi oshiradi (1.16.0 → 1.16.1) → push
 #                        → GitHub EXE yig'adi → server oladi → kassalar yangilanadi
 #
-#  Ya'ni kod papkaga tushdi — tamom, qolganini tizim o'zi qiladi.
-#  Egasi hech narsa bosmaydi.
+#  2026-09-28 (audit I20): skript endi HECH QACHON `main` ga yubormaydi.
+#  O'zgarishlar alohida `avto/<kompyuter>-<repo>` branch'iga ketadi — main'ga
+#  faqat GitHub'da PR ochib, CI testlari o'tgach qo'shiladi. Sabab:
+#  12.09 da skript tekshiruvsiz 3756 ta faylni to'g'ridan-to'g'ri main'ga
+#  (ya'ni Railway production'ga) yuborgan. Maxfiy fayl (.env, kalit, baza)
+#  yoki haddan tashqari ko'p fayl bo'lsa — commit qilinmaydi, logga yoziladi.
 #
 #  Ikki tomonlama: GitHub'da (masalan, Claude sessiyasida) qilingan
 #  o'zgarishlar ham shu yerga O'ZI TUSHADI — har safar avval
@@ -31,6 +35,10 @@ $QUIET = 120
 #: Kassa versiyasi FAQAT shu yo'llardagi o'zgarishda oshiriladi
 #  (skript yoki hujjat o'zgarsa yangi EXE chiqarish shart emas)
 $KASSA_CODE = '^(pos/|shared/|build/|requirements\.txt$|pos_launcher\.py$)'
+#: Bu fayllar hech qachon avtomatik commit qilinmaydi (maxfiy/baza)
+$BLOCKED = '(^|/)(\.env(\..*)?|.*\.(pem|key|pfx|p12|sqlite3?|db)|config\.json|secrets?\..*)$'
+#: Bir martada shundan ko'p fayl — ehtimol keraksiz papka tushgan, to'xtaymiz
+$MAX_FILES = 200
 
 function Log($m) {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $m"
@@ -100,6 +108,20 @@ try {
             }
 
             $n = $changes.Count
+            if ($n -gt $MAX_FILES) {
+                Log "${name}: TO'XTATILDI - $n ta fayl o'zgargan (chegara $MAX_FILES). Qo'lda tekshiring."
+                continue
+            }
+            $bad = @()
+            foreach ($line in $changes) {
+                $pth = $line.Substring(3).Trim().Trim('"') -replace '\\', '/'
+                if ($pth -match ' -> ') { $pth = ($pth -split ' -> ')[-1] }
+                if ($pth -match $BLOCKED) { $bad += $pth }
+            }
+            if ($bad.Count -gt 0) {
+                Log "${name}: TO'XTATILDI - maxfiy/baza fayli commit qilinmaydi: $($bad -join ', ')"
+                continue
+            }
             $msg = "Avto: $(Get-Date -Format 'dd.MM HH:mm') - $n ta fayl"
 
             if ($r.kassa) {
@@ -153,11 +175,18 @@ try {
             Log "${name}: GitHub'dan $behind ta yangilanish olindi"
         }
 
-        # --- 3. Yuboramiz
+        # --- 3. Yuboramiz — main'ga EMAS, shaxsiy branch'ga (PR orqali tekshiriladi)
         $ahead = [int](& $git rev-list --count 'origin/main..HEAD' 2>$null)
         if ($ahead -le 0) { continue }
-        $out = & $git push origin HEAD:main 2>&1
-        if ($LASTEXITCODE -eq 0) { Log "${name}: GitHub'ga ketdi ($ahead ta commit)" }
+        $branch = "avto/$($env:COMPUTERNAME)-$name".ToLower()
+        $headSha = (& $git rev-parse HEAD 2>$null)
+        $remote = ((& $git ls-remote origin "refs/heads/$branch" 2>$null) -split '\s+')[0]
+        if ($remote -eq $headSha) { continue }     # allaqachon yuborilgan
+        # Bu branch'ga faqat shu skript yozadi — --force-with-lease xavfsiz
+        $out = & $git push --force-with-lease origin "HEAD:refs/heads/$branch" 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Log "${name}: GitHub'ga ketdi -> $branch ($ahead ta commit). main'ga qo'shish uchun GitHub'da PR oching."
+        }
         else { Log "${name}: XATO push (keyingi safar qayta urinaman): $out" }
     }
 } catch {

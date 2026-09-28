@@ -24,6 +24,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.headers.get("Authorization") != "Bearer tok":
             self.send_response(401); self.end_headers(); return
         if self.path.startswith("/api/v1/update/download"):
+            _Handler.last_device = self.headers.get("X-Device")
             self.send_response(200)
             self.send_header("Content-Length", str(len(BODY)))
             self.end_headers()
@@ -84,6 +85,15 @@ class DownloadTest(unittest.TestCase):
         self.assertEqual(dest.stat().st_size, len(BODY))
         self.assertFalse(dest.with_suffix(".exe.part").exists())
         self.assertEqual(seen[-1], (len(BODY), len(BODY)))
+
+    def test_yuklab_olishda_qurilma_belgisi_ketadi(self):
+        """I08: server sarlavhasiz so'rovni yopganda yangilanish to'xtamasin."""
+        from . import device
+        _Handler.last_device = None
+        dest = Path(self.dir.name) / "d.exe"
+        self.hub.download(f"{self.hub.config.base}/api/v1/update/download?v=9.0.0", dest,
+                          expected_sha256=hashlib.sha256(BODY).hexdigest())
+        self.assertEqual(_Handler.last_device, device.device_id())
 
     def test_buzuq_fayl_qabul_qilinmaydi(self):
         dest = Path(self.dir.name) / "x.exe"

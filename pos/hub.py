@@ -217,6 +217,10 @@ class Hub:
         request = urllib.request.Request(url, method="GET")
         request.add_header("Authorization", f"Bearer {self.config.token}")
         request.add_header("X-Kassa-Version", VERSION)
+        # Qurilma belgisi — boshqa so'rovlardagidek (audit I08: server bir
+        # kun sarlavhasiz so'rovni yopadi, yangilanish to'xtab qolmasin)
+        request.add_header("X-Device", device.device_id())
+        request.add_header("X-Device-Name", device.device_name())
 
         digest = hashlib.sha256()
         done = 0
@@ -530,8 +534,11 @@ class LiveBackend:
                     product = replace(product, is_weight=True)
                 return product, scan.weight
             if product.price > 0:
-                # Narxli yorliq: miqdorni narxdan chiqaramiz
-                return product, Decimal(scan.price) / Decimal(product.price)
+                # Narxli yorliq: miqdorni narxdan chiqaramiz — grammgacha
+                # (server 3 xonadan ko'p kasrni qabul qilmaydi, I02)
+                from .money import label_quantity
+                qty = label_quantity(int(scan.price), int(product.price))
+                return (product, qty) if qty is not None else None
             return None
 
         return None
