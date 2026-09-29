@@ -837,8 +837,14 @@ def main() -> int:
 
         data = store.unpark(dialog.chosen)
         if data:
-            window.cart = cart_from_dict(data)
+            # Joriy narx turiga keltiriladi: park paytidan beri panel turni
+            # almashtirgan bo'lsa, eski narx bilan chek server rad etardi.
+            from .price_policy import restore_parked
+            window.cart, changed = restore_parked(backend, data)
             window.refresh()
+            if changed:
+                window.flash(tr("Chek joriy narx turiga o'tkazildi: {n}").format(
+                    n=backend.price_type_name))
 
     def show_history() -> None:
         import json as _json
