@@ -14,7 +14,9 @@ class DeploymentTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        # Windows runners may spell TEMP with an 8.3 alias (RUNNER~1).
+        # Fault injection must compare canonical paths like production does.
+        self.root = Path(self.tmp.name).resolve()
         self.env = mock.patch.dict(os.environ, {'APPDATA': str(self.root / 'Roaming')})
         self.env.start()
         self.addCleanup(self.env.stop)
