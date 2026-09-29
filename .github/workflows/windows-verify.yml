@@ -7,7 +7,7 @@ name: Windows tekshiruv (Release'siz)
 #   * natija faqat Actions artifact (14 kun). Server (sales/releases.py)
 #     faqat GitHub'dagi /releases/latest ni o'qiydi — artifact'ni ko'rmaydi,
 #     ya'ni kassalar uni avtomatik olmaydi.
-# Umumiy chiqarish (build.yml, faqat main push) bu fayldan mustaqil.
+# Umumiy chiqarish (build.yml) shu tekshiruv muvaffaqiyatini kutadi.
 #
 # Tekshiruvlar (hammasi runner'ning vaqtinchalik papkalarida, haqiqiy
 # server/MoySklad/kassa bazasiga ulanmaydi):
@@ -21,16 +21,14 @@ name: Windows tekshiruv (Release'siz)
 #      yubormaydi, maxfiy fayl va 200+ faylda to'xtaydi, qayta klonda ham push.
 
 on:
-  push:
-    branches: ["audit-**", "sinov/**"]
-  pull_request:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-verify-${{ github.ref }}
+  group: windows-verify-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

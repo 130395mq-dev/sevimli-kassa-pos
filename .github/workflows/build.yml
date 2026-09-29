@@ -63,12 +63,16 @@ jobs:
           name: sevimli-ui-preview
           path: previews/
 
+  windows-verify:
+    name: Windows release gate
+    uses: ./.github/workflows/windows-verify.yml
+
   build:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     permissions:
       contents: write
     name: Windows x64 EXE → Release
-    needs: test
+    needs: [test, windows-verify]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
