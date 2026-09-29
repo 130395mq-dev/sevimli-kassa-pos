@@ -458,6 +458,15 @@ class MainWindow(QMainWindow):
         tick()
         root.addWidget(brand)
 
+        self.printer_status = QLabel()
+        self.printer_status.setWordWrap(True)
+        self.printer_status.setTextFormat(Qt.PlainText)
+        self.printer_status.setStyleSheet(
+            "background: #FFF1CF; color: #713F12; padding: 10px 18px; font-size: 14px;"
+        )
+        self.printer_status.hide()
+        root.addWidget(self.printer_status)
+
         body = QHBoxLayout()
         body.setContentsMargins(14, 14, 14, 14)
         body.setSpacing(14)
@@ -1149,6 +1158,11 @@ class MainWindow(QMainWindow):
         """Qisqa xabar — status qatorida."""
         self.status_label.setText(message)
         self.status_label.setStyleSheet(f"color: {t.DANGER}; font-size: 12px;")
+
+    def set_printer_status(self, message: str) -> None:
+        """Persistent, non-modal; checkout refresh must not erase warnings."""
+        self.printer_status.setText(message)
+        self.printer_status.setVisible(bool(message))
 
     # ------------------------------------------------------------ chizish
 

@@ -52,7 +52,9 @@ class DemoBackend:
             if scan.weight is not None:
                 return product, scan.weight
             # Narxli kod: miqdorni narxdan chiqaramiz
-            return product, Decimal(scan.price) / Decimal(product.price)
+            from .money import label_quantity
+            qty = label_quantity(int(scan.price), int(product.price))
+            return (product, qty) if qty is not None else None
 
         product = next((p for p in CATALOG if p.barcode == code), None)
         return (product, Decimal(1)) if product else None

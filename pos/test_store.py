@@ -10,9 +10,11 @@ ma'nosi shunda: server o'chsa ham savdo davom etadi.
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 import uuid
+from unittest import mock
 from decimal import Decimal
 from pathlib import Path
 
@@ -269,8 +271,8 @@ class OutboxTest(unittest.TestCase):
         backend = LiveBackend(hub, self.store, METHODS)
         backend.submit(self.make_cart(), self._paid_plan())
 
-        self.assertEqual(len(hub.received), 1)
-        self.assertEqual(backend.flush(), 0)
+        self.assertEqual(len(hub.received), 0)
+        self.assertEqual(backend.flush(), 1)
         self.assertEqual(backend.flush(), 0)
         self.assertEqual(len(hub.received), 1)
 
@@ -279,6 +281,51 @@ class OutboxTest(unittest.TestCase):
         plan = PaymentPlan(total=cart.total)
         plan.add_cash(cart.total)
         return plan
+
+    def test_saved_sale_ack_disk_error_keeps_same_uuid_for_retry(self):
+        hub = FakeHub(online=True)
+        backend = LiveBackend(hub, self.store, METHODS)
+        with mock.patch.object(self.store, "mark_sent", side_effect=sqlite3.OperationalError("database or disk is full")):
+            backend.submit(self.make_cart(), self._paid_plan())
+            # Failure is in the background delivery, after checkout succeeded.
+            with self.assertRaises(sqlite3.OperationalError):
+                backend.flush()
+        self.assertEqual(len(hub.received), 1)
+        original_uuid = hub.received[0]["local_uuid"]
+        self.assertEqual(self.store.pending()[0]["local_uuid"], original_uuid)
+        self.assertIn(original_uuid[:8].upper(), backend.last_receipt_number)
+        self.assertEqual(backend.flush(), 1)
+        self.assertEqual([p["local_uuid"] for p in hub.received], [original_uuid, original_uuid])
+        self.assertEqual(self.store.pending_count(), 0)
+
+    def test_saved_offline_sale_error_log_disk_failure_is_not_unsaved(self):
+        hub = FakeHub(online=False)
+        backend = LiveBackend(hub, self.store, METHODS)
+        with mock.patch.object(self.store, "note_outage", side_effect=sqlite3.OperationalError("database or disk is full")):
+            backend.submit(self.make_cart(), self._paid_plan())
+            with self.assertRaises(sqlite3.OperationalError):
+                backend.flush()
+        self.assertEqual(self.store.pending_count(), 1)
+        self.assertEqual(hub.received, [])
+
+    def test_sqlite_full_before_queue_rejects_sale_and_preserves_old_receipt(self):
+        hub = FakeHub(online=False)
+        backend = LiveBackend(hub, self.store, METHODS)
+        backend.submit(self.make_cart(), self._paid_plan())
+        before = [dict(row) for row in self.store.unsent_rows()]
+        page_count = self.store.db.execute("PRAGMA page_count").fetchone()[0]
+        self.store.db.execute(f"PRAGMA max_page_count={page_count}")
+        # A large receipt forces an allocation; SQLite returns SQLITE_FULL.
+        # The actual Windows drive is never filled.
+        hub.online = True
+        with mock.patch.object(LiveBackend, "price_type_name", new_callable=mock.PropertyMock,
+                               return_value="x" * (1024 * 1024)):
+            with self.assertRaises(sqlite3.OperationalError) as caught:
+                backend.submit(self.make_cart(), self._paid_plan())
+        self.assertEqual(caught.exception.sqlite_errorcode, sqlite3.SQLITE_FULL)
+        self.assertEqual(hub.received, [])
+        self.assertEqual([dict(row) for row in self.store.unsent_rows()], before)
+        self.assertEqual(self.store.db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
 
     # -------- yangi: navbat bloki va ikki marta pul tuzatishlari --------
 
@@ -586,6 +633,7 @@ class BarcodeLookupTest(unittest.TestCase):
     """
 
     MS_CODE = "2000003296927"  # haqiqiy holat: MoySklad yaratgan, nazorat raqami to'g'ri
+    CODE_21 = "2147800001238"  # 21 bilan boshlanadigan donali tovar kodi (nazorat raqami to'g'ri)
 
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -606,12 +654,46 @@ class BarcodeLookupTest(unittest.TestCase):
              # Upakovka (MoySklad «Упаковка»): 6 talik blok kodi
              "packs": [{"barcode": "14780001000014", "quantity": 6}],
              "price": 2_000_00, "is_weight": False, "plu": None, "tracked": False, "stock": 40},
+            # 21 bilan boshlanadigan DONALI tovar kodi (katalogda bor)
+            {"id": 13, "ms_id": "ms-13", "name": "Sut 1 l", "code": "S99",
+             "barcode": self.CODE_21, "price": 12_000_00, "is_weight": False,
+             "plu": None, "tracked": False, "stock": 10},
         ])
         self.backend = LiveBackend(FakeHub(), self.store, METHODS)
 
     def tearDown(self):
         self.store.close()
         self.dir.cleanup()
+
+    @staticmethod
+    def _ean(body12: str) -> str:
+        total = sum(int(d) * (3 if i % 2 else 1) for i, d in enumerate(body12))
+        return body12 + str((10 - total % 10) % 10)
+
+    def test_katalogda_yoq_21_kod_topilmadi_tarozi_emas(self):
+        """Kassa3 hodisasi (27.09 16:28): katalogda yo'q 21… zavod kodi PLU'si
+        mos tovarga «narxli yorliq» bo'lib tushgan edi. Endi — topilmadi."""
+        self.assertIsNone(self.backend.find_by_barcode(self._ean("210012314596")))
+        self.assertIsNone(self.backend.find_by_barcode(self._ean("210012301032")))
+        for prefix in ("22", "23", "24"):
+            self.assertIsNone(self.backend.find_by_barcode(self._ean(prefix + "0012300734")))
+
+    def test_katalogdagi_21_kod_donali_tovar_1_dona(self):
+        """21 bilan boshlanadigan donali kodlar o'qilaveradi (aniq moslik)."""
+        product, qty = self.backend.find_by_barcode(self.CODE_21)
+        self.assertEqual(product.name, "Sut 1 l")
+        self.assertEqual(qty, Decimal(1))
+
+    def test_29_tarozi_kodi_kilo_bilan(self):
+        product, qty = self.backend.find_by_barcode(self._ean("290012300734"))
+        self.assertEqual(product.name, "Go'sht")
+        self.assertEqual(qty, Decimal("0.734"))
+
+    def test_label_quantity_chegaralari(self):
+        from pos.money import label_quantity
+        self.assertEqual(label_quantity(1_000_00, 3_000_00), Decimal("0.333"))
+        self.assertIsNone(label_quantity(1, 3_000_00))        # 1 grammdan kam
+        self.assertIsNone(label_quantity(1_000_00, 0))
 
     def test_moysklad_kodi_donali_tovar_1_dona(self):
         product, qty = self.backend.find_by_barcode(self.MS_CODE)
@@ -736,7 +818,7 @@ class HistoryNumberTest(unittest.TestCase):
         hub = FakeHub(online=True)
         backend = LiveBackend(hub, self.store, METHODS)
         self._sell(backend)
-        self.assertEqual(backend.flush(), 0)
+        self.assertEqual(backend.flush(), 1)
         row = self.store.recent_sales(1)[0]
         self.assertEqual(row["sent"], 1)
         self.assertEqual(row["check_no"], 1)  # FakeHub id = 1
@@ -857,6 +939,36 @@ class HistoryNumberTest(unittest.TestCase):
         self.assertIn("Qaytim", text)
         self.assertTrue(text.startswith(" ") or text.startswith("NUSXA"))
         self.assertIn("NUSXA", text.splitlines()[0])   # tepasida nusxa belgisi
+
+    def test_qayta_chop_etishda_raqam_doim_chiqadi(self):
+        """2026-09-28 (egasi): kassa3 nusxasida «Chek #MoySklad: kutilmoqda»
+        chiqqan — chekni hech yerdan topib bo'lmasdi. Endi raqam doim bor."""
+        from .history import receipt_label, render_history_sale
+
+        base = {"local_uuid": "9d957adc-32c6-4935-bf3d-58bf9cd100e0",
+                "created_at": "2026-09-27T11:28:00+00:00", "gross_total": 100000,
+                "items": [{"name": "Non", "quantity": "1", "price": 100000,
+                           "total": 100000}],
+                "payments": [{"method": "naqd", "amount": 100000}]}
+        # Yuborilmagan: UUID boshi (panel/logdagi bilan bir xil)
+        self.assertEqual(receipt_label(base), "Yuborilmagan 9D957ADC")
+        text = render_history_sale(base, market="Sevimli", point="", cashier="Ali",
+                                   shift_no=18, methods=METHODS, width=48)
+        self.assertIn("Yuborilmagan 9D957ADC", text)
+        self.assertNotIn("kutilmoqda", text)
+        # Serverga yetgan, MoySklad raqami hali yo'q — server raqami
+        pending = dict(base, receipt_number="MoySklad: kutilmoqda")
+        self.assertEqual(receipt_label(pending, 15), "SK-15")
+        self.assertIn("SK-15", render_history_sale(
+            pending, market="Sevimli", point="", cashier="Ali", shift_no=18,
+            methods=METHODS, width=48, check_no=15))
+        # MoySklad raqami bor — o'sha
+        self.assertEqual(receipt_label(dict(base, receipt_number="ОТ-0208"), 15), "ОТ-0208")
+        # Qaytarish nusxasi ham
+        ret = dict(base, kind="return", net_total=100000)
+        self.assertIn("SK-16", render_history_sale(
+            ret, market="Sevimli", point="", cashier="Ali", shift_no=18,
+            methods=METHODS, width=48, check_no=16))
 
     def test_tarix_vaqti_mahalliy(self):
         """Outbox'da UTC (09:54+00:00) — Toshkentda 14:54 ko'rinsin."""

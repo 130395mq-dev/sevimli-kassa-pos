@@ -34,3 +34,12 @@ kassa-yuklash-log.txt
 
 # Ish rejasining nusxasi (ps1 uni .github/workflows/build.yml ga ko'chiradi)
 github-workflow-build.yml
+
+# Maxfiy va lokal baza fayllari — hech qachon repo'ga tushmasin (audit I20)
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.db
+*.sqlite3

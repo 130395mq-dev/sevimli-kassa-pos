@@ -1,10 +1,9 @@
 """
 Hub bilan aloqa.
 
-Qoida: **chek avval diskka, keyin serverga.** Onlayn holatda kassa
-MoySklad yaratgan hujjatning haqiqiy ОТ-* raqamini kutib, qog'oz chekni
-shu raqam bilan chiqaradi. Internet uzilsa chek lokal navbatda qoladi va
-vaqtinchalik ekanini ochiq ko'rsatadi.
+Qoida: **chek avval diskka, keyin serverga.** Kassir server javobini
+kutmaydi: fon navbatni yuboradi. Dastlabki qog'oz chekda lokal belgi,
+yetkazilgandan keyingi nusxada server yoki MoySklad raqami chiqadi.
 
 Takroriy yuborish xavfsiz: har chekning `local_uuid` si bor va server
 o'sha kalit bo'yicha takrorni rad etadi.
@@ -14,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import threading
 import urllib.error
 import urllib.parse
@@ -148,6 +148,11 @@ class Hub:
             raise HubConnError(f"Serverga ulanib bo'lmadi: {e.reason}") from e
         except TimeoutError as e:
             raise HubConnError("Server javob bermadi") from e
+        except OSError as e:
+            # Windows can raise ConnectionAbortedError/ConnectionResetError
+            # directly while opening or reading a response, without URLError.
+            # Preserve the retryable/offline path used by callers.
+            raise HubConnError("Server bilan aloqa uzildi") from e
 
     # ------------------------------------------------------------ so'rovlar
 
@@ -217,6 +222,10 @@ class Hub:
         request = urllib.request.Request(url, method="GET")
         request.add_header("Authorization", f"Bearer {self.config.token}")
         request.add_header("X-Kassa-Version", VERSION)
+        # Qurilma belgisi — boshqa so'rovlardagidek (audit I08: server bir
+        # kun sarlavhasiz so'rovni yopadi, yangilanish to'xtab qolmasin)
+        request.add_header("X-Device", device.device_id())
+        request.add_header("X-Device-Name", device.device_name())
 
         digest = hashlib.sha256()
         done = 0
@@ -530,8 +539,11 @@ class LiveBackend:
                     product = replace(product, is_weight=True)
                 return product, scan.weight
             if product.price > 0:
-                # Narxli yorliq: miqdorni narxdan chiqaramiz
-                return product, Decimal(scan.price) / Decimal(product.price)
+                # Narxli yorliq: miqdorni narxdan chiqaramiz — grammgacha
+                # (server 3 xonadan ko'p kasrni qabul qilmaydi, I02)
+                from .money import label_quantity
+                qty = label_quantity(int(scan.price), int(product.price))
+                return (product, qty) if qty is not None else None
             return None
 
         return None
@@ -606,8 +618,10 @@ class LiveBackend:
         self._bind_shift(payload)
 
         self.store.queue(local_uuid, payload, created_at)
-        self.last_receipt_number = "MoySklad: kutilmoqda"
-        self._send_now(local_uuid, payload)
+        from .history import receipt_label
+        self.last_receipt_number = receipt_label(payload)
+        # UI emits sale_finished to wake the existing background flush.
+        # Do not do network I/O here: even an online server can hang.
 
     def _send_now(self, local_uuid: str, payload: dict) -> None:
         """Navbatga yozilgan chekni shu zahoti serverga yuboradi.
@@ -638,9 +652,16 @@ class LiveBackend:
 
             check_no = resp.get("id") if isinstance(resp, dict) else None
             official = resp.get("receipt_number") if isinstance(resp, dict) else None
-            self.store.mark_sent(local_uuid, check_no, official)
             if official:
                 self.last_receipt_number = official
+            self.store.mark_sent(local_uuid, check_no, official)
+        except sqlite3.Error:
+            # queue() has already committed this UUID. Failure to record an
+            # acknowledgement/outage must not tell the cashier "Saqlanmadi"
+            # and invite a second sale with a NEW UUID. Keep the original
+            # outbox row for the normal idempotent retry after disk recovery.
+            # Do not try another database write while storage is failing.
+            logger.exception("Chek %s saqlangan; yuborish holati lokal bazaga yozilmadi", local_uuid)
         finally:
             with _INFLIGHT_LOCK:
                 _INFLIGHT.discard(local_uuid)

@@ -22,10 +22,50 @@ import os
 import subprocess
 import sys
 import tempfile
+import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PrintJob:
+    printer: str
+    job_id: int
+    document: str
+
+
+def job_pending(job: PrintJob) -> bool:
+    """Queue membership, NOT proof of paper output. Call off the UI thread.
+
+    Exceptions mean unknown; they must never be interpreted as success.
+    Match the document too, since Windows may reuse a job identifier.
+    """
+    handle = win32print.OpenPrinter(job.printer)
+    try:
+        jobs = win32print.EnumJobs(handle, 0, 10000, 1)
+        if any(j['JobId'] == job.job_id and j.get('pDocument') == job.document
+               for j in jobs):
+            return True
+        if len(jobs) >= 10000:
+            raise RuntimeError("Printer navbati to'liq tekshirilmadi")
+        return False
+    finally:
+        win32print.ClosePrinter(handle)
+
+
+def send_saved_sale(text: str, path: Path, printer: str = "", paper: str = "80",
+                    width: int = 48) -> PrintJob | None:
+    """Submit once; never retry an uncertain submission (duplicate risk)."""
+    if sys.platform == "win32" and _HAS_WIN32:
+        return _print_sale_raw(text, printer, paper, width, document=path.name)
+    if sys.platform == "win32":
+        _print_windows_fallback(path, printer)
+    else:
+        _print_unix(path, printer)
+    return None
 
 # win32print bor-yo'qligini bir marta tekshiramiz (faqat Windows'da bo'ladi)
 try:  # pragma: no cover - platformaga bog'liq
@@ -132,12 +172,7 @@ def print_sale(text: str, printer: str = "", paper: str = "80",
     path = save(plain, name)
 
     try:
-        if sys.platform == "win32" and _HAS_WIN32:
-            _print_sale_raw(text, printer, paper, width)
-        elif sys.platform == "win32":
-            _print_windows_fallback(path, printer)
-        else:
-            _print_unix(path, printer)
+        send_saved_sale(text, path, printer, paper, width)
     except Exception as e:  # pragma: no cover
         logger.warning("Chek chop etilmadi (%s). Fayl: %s", e, path)
         return False, path
@@ -173,7 +208,8 @@ def head_bytes() -> bytes:
     return INIT + CANCEL_CJK + INTL_USA + ESC + b"t" + bytes([page])
 
 
-def _print_sale_raw(text: str, printer: str, paper: str, width: int) -> None:  # pragma: no cover
+def _print_sale_raw(text: str, printer: str, paper: str, width: int,
+                    document: str = "Sevimli chek") -> PrintJob:  # pragma: no cover
     """RAW ESC/POS: logo + matn + oq-qora rahmat bar."""
     name = printer or default_printer()
     if not name:
@@ -202,15 +238,20 @@ def _print_sale_raw(text: str, printer: str, paper: str, width: int) -> None:  #
 
     handle = win32print.OpenPrinter(name)
     try:
-        win32print.StartDocPrinter(handle, 1, ("Sevimli chek", None, "RAW"))
+        job_id = win32print.StartDocPrinter(handle, 1, (document, None, "RAW"))
+        if not job_id:
+            raise RuntimeError("Printer navbatni qabul qilmadi")
         try:
             win32print.StartPagePrinter(handle)
-            win32print.WritePrinter(handle, data)
+            written = win32print.WritePrinter(handle, data)
+            if written != len(data):
+                raise RuntimeError("Chek printerga to'liq yuborilmadi")
             win32print.EndPagePrinter(handle)
         finally:
             win32print.EndDocPrinter(handle)
     finally:
         win32print.ClosePrinter(handle)
+    return PrintJob(name, job_id, document)
 
 
 #: PC866 kod sahifasida yo'q belgilarni oddiy ASCII'ga almashtiramiz,
@@ -249,8 +290,8 @@ def archive_dir() -> Path:
 
 def save(text: str, name: str = "chek") -> Path:
     """Chekni faylga yozadi va yo'lini qaytaradi (arxiv)."""
-    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    path = archive_dir() / f"{name}-{stamp}.txt"
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
+    path = archive_dir() / f"{name}-{stamp}-{uuid.uuid4().hex}.txt"
     # Windows'da Notepad CRLF kutadi
     path.write_text(text.replace("\n", "\r\n"), encoding="utf-8-sig")
     return path

@@ -67,6 +67,26 @@ def parse_som(text: str) -> int | None:
     return int(cleaned) * 100
 
 
+#: Server va MoySklad miqdorni 3 kasr xonasigacha (gramm) saqlaydi
+QTY_STEP = Decimal("0.001")
+
+
+def label_quantity(label_price: int, unit_price: int) -> Decimal | None:
+    """Narxli tarozi yorlig'i: yorliq summasi ÷ tovar narxi → miqdor, GRAMMGACHA.
+
+    Ilgari 1 000 ÷ 3 000 = 0,33333… kg to'g'ridan-to'g'ri chekka tushardi,
+    server esa 3 xonadan ko'p kasrni rad etib chek navbatda tiqilib qolardi
+    (I01/I02, 2026-09-27). Tarozi summani «vazn × narx» dan chiqaradi,
+    shuning uchun grammgacha yaxlitlash asl vaznni qaytaradi; chek summasi
+    = narx × shu vazn (yorliqdan farq faqat tarozidagi narx eskirgan
+    bo'lsa chiqadi — unda katalog narxi to'g'ri). 1 grammdan kam — None.
+    """
+    if unit_price <= 0 or label_price <= 0:
+        return None
+    qty = (Decimal(label_price) / Decimal(unit_price)).quantize(QTY_STEP, rounding=ROUND_HALF_UP)
+    return qty if qty > 0 else None
+
+
 def refund_total(item: dict, quantity) -> int:
     """Use the server's original net allocation, including earlier refunds."""
     qty = Decimal(str(quantity))
