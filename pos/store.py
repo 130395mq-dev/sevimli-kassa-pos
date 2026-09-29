@@ -479,11 +479,19 @@ class Store:
         return self.db.execute("SELECT COUNT(*) FROM outbox WHERE sent=0").fetchone()[0]
 
     def hello_queue(self) -> dict:
-        pending = self.unsent_count()
-        result = {"local_pending": pending, "local_stuck": self.stuck_count(),
-                  "local_error": self.queue_error()}
-        if not pending:
-            result["price_policy_ack"] = self.get("price_policy_ack") or ""
+        # One SQLite snapshot: checkout may enqueue an old-price receipt and
+        # apply the new policy between two separate reads in this thread.
+        row = self.db.execute(
+            "SELECT COUNT(*) AS pending, COALESCE(SUM(attempts >= ?), 0) AS stuck,"
+            " (SELECT value FROM meta WHERE key='price_policy_ack') AS ack,"
+            " (SELECT local_uuid || ': ' || last_error FROM outbox"
+            "  WHERE sent=0 AND last_error<>'' ORDER BY created_at LIMIT 1) AS error"
+            " FROM outbox WHERE sent=0", (self.MAX_ATTEMPTS,),
+        ).fetchone()
+        result = {"local_pending": row["pending"], "local_stuck": row["stuck"],
+                  "local_error": row["error"] or ""}
+        if not row["pending"]:
+            result["price_policy_ack"] = row["ack"] or ""
         return result
 
     def queue_error(self) -> str:

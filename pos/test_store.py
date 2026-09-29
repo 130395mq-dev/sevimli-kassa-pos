@@ -553,6 +553,35 @@ class PriceTypeTest(unittest.TestCase):
             self.store.mark_failed(uid, "invalid")
         self.assertNotIn("price_policy_ack", self.store.hello_queue())
 
+    def test_checkout_racing_hello_cannot_ack_new_policy_with_stale_empty_count(self):
+        self.store.set("price_policy_ack", "old-policy")
+        cart = Cart()
+        cart.add(self.store.by_barcode("1"))
+        plan = PaymentPlan(cart.total)
+        plan.add_cash(cart.total)
+        connection = self.store.db
+        injected = []
+
+        def execute(sql, params=()):
+            cursor = connection.execute(sql, params)
+            if "COUNT(*)" in sql and "outbox" in sql and not injected:
+                rows = cursor.fetchall()  # Capture the background read before checkout commits.
+                injected.append(True)
+                self.backend.submit(cart, plan)
+                self.store.set("price_policy_ack", "new-policy")
+                return mock.Mock(fetchone=lambda: rows[0])
+            return cursor
+
+        self.store.db = mock.Mock(wraps=connection)
+        self.store.db.execute.side_effect = execute
+        try:
+            reported = self.store.hello_queue()
+        finally:
+            self.store.db = connection
+        self.assertTrue(injected)
+        self.assertEqual(self.store.unsent_count(), 1)
+        self.assertNotEqual(reported.get("price_policy_ack"), "new-policy")
+
     def test_chek_qayta_narxlanadi(self):
         cart = Cart()
         cart.add(self.store.by_barcode("1"), 2)
