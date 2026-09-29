@@ -6,11 +6,18 @@ class PricePolicy:
     def __init__(self, backend, cart, *, busy=lambda: False, applied=lambda changed: None,
                  deferred=lambda: None):
         self.backend = backend
-        self.cart = cart
+        # `cart` — obyekt yoki uni qaytaradigan funksiya. Oynada chek obyekti
+        # almashadi (kechiktirilgan chekni ochish `window.cart` ni yangi
+        # obyekt qiladi), shuning uchun har safar joriy chekka qaraymiz.
+        self._cart = cart
         self.busy = busy
         self.applied = applied
         self.deferred = deferred
         self.pending = None
+
+    @property
+    def cart(self):
+        return self._cart() if callable(self._cart) else self._cart
 
     def offer(self, info):
         self.pending = deepcopy({key: info.get(key) for key in
@@ -38,6 +45,20 @@ class PricePolicy:
         return True
 
 
+def restore_parked(backend, data):
+    """Kechiktirilgan chekni tiklaydi va JORIY narx turiga o'tkazadi.
+
+    Chek park qilingandan keyin panel narx turini almashtirgan bo'lishi
+    mumkin. Eski narx bilan yangi tur yuborilsa server «narx katalogga mos
+    emas» deb rad etadi — mijoz to'lagan chek navbatda tiqilib qoladi. Chek
+    hali to'lanmagan, shuning uchun uni joriy narxga keltiramiz (kassir
+    ekranda yangi summani ko'radi). Qaytaradi: (cart, o'zgargan qatorlar).
+    """
+    from .cart import cart_from_dict
+    cart = cart_from_dict(data)
+    return cart, cart.reprice(backend.price_type_id)
+
+
 def bind_price_policy(backend, window):
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
@@ -50,7 +71,7 @@ def bind_price_policy(backend, window):
             window.flash(tr("Narx turi: {n}").format(n=backend.price_type_name))
 
     policy = PricePolicy(
-        backend, window.cart, busy=lambda: QApplication.activeModalWidget() is not None,
+        backend, lambda: window.cart, busy=lambda: QApplication.activeModalWidget() is not None,
         applied=applied,
         deferred=lambda: window.flash(tr("Yangi narx turi keyingi chekdan qo'llanadi")),
     )
