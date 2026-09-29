@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 APP_NAME = "Sevimli Kassa"
 EXE_NAME = "SevimliKassa.exe"
+
+
+class InstallError(RuntimeError):
+    pass
 
 
 def app_dir() -> Path:
@@ -73,7 +76,8 @@ foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::Ge
 
 
 def _make_shortcuts(exe: Path) -> None:
-    script = _SHORTCUTS_PS.format(exe=str(exe), dir=str(exe.parent), name=APP_NAME)
+    script = _SHORTCUTS_PS.format(exe=str(exe).replace("'", "''"),
+                                  dir=str(exe.parent).replace("'", "''"), name=APP_NAME)
     creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
@@ -101,7 +105,7 @@ def ensure_autostart() -> None:
         subprocess.run(
             ["reg", "add",
              r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-             "/v", "SevimliKassa", "/t", "REG_SZ", "/d", str(exe), "/f"],
+             "/v", "SevimliKassa", "/t", "REG_SZ", "/d", '"' + str(exe) + '"', "/f"],
             creationflags=creation, timeout=15, check=False,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -109,52 +113,30 @@ def ensure_autostart() -> None:
         logger.info("Avtoyuklanish yozilmadi: %s", e)
 
 
-def _kill_other_instances() -> None:
-    """O'rnatilgan nusxa ishlab turgan bo'lsa — yopamiz, aks holda ustidan
-    yozib bo'lmaydi (Windows ishlayotgan exe ni qulflaydi)."""
-    creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.run(
-        ["taskkill", "/F", "/IM", EXE_NAME, "/FI", f"PID ne {os.getpid()}"],
-        creationflags=creation, timeout=15, check=False,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-
-
 def ensure_installed() -> bool:
-    """O'rnatilgan joydan ishlamayotgan bo'lsak — o'rnatadi va o'rnatilgan
-    nusxani ishga tushiradi.
+    """Install a verified directory; never force-close an open register.
 
-    onedir bo'lgani uchun BUTUN PAPKA ko'chiriladi (exe + _internal).
-
-    True qaytarsa — chaqiruvchi DARHOL chiqishi kerak (o'rnatilgan nusxa
-    ochilib bo'ldi). False — davom etaveramiz (yig'ilmagan muhit, yoki
-    allaqachon o'rnatilgan joydamiz, yoki o'rnatib bo'lmadi).
+    False: source mode/already installed. True: installed process owns startup.
+    Failure raises InstallError so an uninstalled copy cannot silently trade.
     """
     if not is_frozen() or is_installed_copy():
         return False
-
-    src_dir = app_dir()
-    dest_dir = install_dir()
-    dest_exe = installed_exe()
+    import json
+    import uuid
+    from . import updater, update_worker, deployment
+    from .version import VERSION
     try:
-        _kill_other_instances()
-        dest_dir.parent.mkdir(parents=True, exist_ok=True)
-        # Butun papkani ko'chiramiz. dirs_exist_ok=True — eski o'rnatma
-        # ustiga yozadi (fayllar almashtiriladi). Ishlayotgan nusxa
-        # yo'q (yuqorida yopdik), shuning uchun qulf muammosi yo'q.
-        shutil.copytree(src_dir, dest_dir, dirs_exist_ok=True)
-        _make_shortcuts(dest_exe)
-        ensure_autostart()
-    except Exception as e:
-        logger.error("O'zini o'rnatib bo'lmadi: %s", e)
-        return False
-
-    logger.info("O'rnatildi: %s", dest_dir)
+        with deployment.register_closed('SevimliKassa-Update'):
+            result = update_worker.perform(app_dir(), install_dir(), updater.update_dir(), VERSION)
+        report = updater.update_dir() / ('install-' + uuid.uuid4().hex + '.result.json')
+        report.write_text(json.dumps(result, indent=2), encoding='utf-8')
+    except Exception as exc:
+        raise InstallError(str(exc)) from exc
+    if result['status'] not in ('updated', 'running-unconfirmed-backup-retained'):
+        raise InstallError('Ornatish yakunlanmadi. Eski nusxa saqlandi.\n' + result.get('error', result['status']))
+    # Cosmetic integration must not roll back a healthy register.
     try:
-        creation = getattr(subprocess, "DETACHED_PROCESS", 0)
-        subprocess.Popen([str(dest_exe)], cwd=str(dest_dir), close_fds=True,
-                         creationflags=creation)
-    except OSError as e:
-        logger.error("O'rnatilgan nusxa ochilmadi: %s", e)
-        return False
+        _make_shortcuts(installed_exe())
+    except Exception:
+        logger.exception('Could not create shortcuts; installed register is running')
     return True

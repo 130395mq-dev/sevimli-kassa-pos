@@ -1,10 +1,9 @@
 """
 Hub bilan aloqa.
 
-Qoida: **chek avval diskka, keyin serverga.** Onlayn holatda kassa
-MoySklad yaratgan hujjatning haqiqiy ОТ-* raqamini kutib, qog'oz chekni
-shu raqam bilan chiqaradi. Internet uzilsa chek lokal navbatda qoladi va
-vaqtinchalik ekanini ochiq ko'rsatadi.
+Qoida: **chek avval diskka, keyin serverga.** Kassir server javobini
+kutmaydi: fon navbatni yuboradi. Dastlabki qog'oz chekda lokal belgi,
+yetkazilgandan keyingi nusxada server yoki MoySklad raqami chiqadi.
 
 Takroriy yuborish xavfsiz: har chekning `local_uuid` si bor va server
 o'sha kalit bo'yicha takrorni rad etadi.
@@ -14,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import threading
 import urllib.error
 import urllib.parse
@@ -618,8 +618,10 @@ class LiveBackend:
         self._bind_shift(payload)
 
         self.store.queue(local_uuid, payload, created_at)
-        self.last_receipt_number = "MoySklad: kutilmoqda"
-        self._send_now(local_uuid, payload)
+        from .history import receipt_label
+        self.last_receipt_number = receipt_label(payload)
+        # UI emits sale_finished to wake the existing background flush.
+        # Do not do network I/O here: even an online server can hang.
 
     def _send_now(self, local_uuid: str, payload: dict) -> None:
         """Navbatga yozilgan chekni shu zahoti serverga yuboradi.
@@ -650,9 +652,16 @@ class LiveBackend:
 
             check_no = resp.get("id") if isinstance(resp, dict) else None
             official = resp.get("receipt_number") if isinstance(resp, dict) else None
-            self.store.mark_sent(local_uuid, check_no, official)
             if official:
                 self.last_receipt_number = official
+            self.store.mark_sent(local_uuid, check_no, official)
+        except sqlite3.Error:
+            # queue() has already committed this UUID. Failure to record an
+            # acknowledgement/outage must not tell the cashier "Saqlanmadi"
+            # and invite a second sale with a NEW UUID. Keep the original
+            # outbox row for the normal idempotent retry after disk recovery.
+            # Do not try another database write while storage is failing.
+            logger.exception("Chek %s saqlangan; yuborish holati lokal bazaga yozilmadi", local_uuid)
         finally:
             with _INFLIGHT_LOCK:
                 _INFLIGHT.discard(local_uuid)

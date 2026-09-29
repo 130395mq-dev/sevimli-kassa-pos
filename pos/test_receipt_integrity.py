@@ -111,7 +111,7 @@ class ReceiptIntegrityTest(unittest.TestCase):
         backend.submit(cart, plan)
         payload = json.loads(self.store.pending()[0]['payload'])
         number = backend.last_receipt_number
-        self.assertEqual(number, 'MoySklad: kutilmoqda')
+        self.assertEqual(number, 'Yuborilmagan ' + payload['local_uuid'][:8].upper())
         receipt = SaleReceipt(market='Sevimli', point='Test', cashier='Test', shift_no=1,
             number=number, when=datetime.now(), items=[], gross_total=cart.total,
             discount_total=0, net_total=cart.total)

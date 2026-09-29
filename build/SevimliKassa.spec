@@ -26,6 +26,18 @@ ga qadoqlaydi — panelga yuklash va tarqatish uchun).
 
 import glob
 import os
+import sys
+
+# Build subprocess only: unrelated tools on PATH can provide an incompatible
+# icuuc.dll (observed: Poppler ICU78 instead of Windows ICU, missing 20 Qt
+# imports). Qt hooks resolve their own package directories. Do not collect
+# DLLs from arbitrary applications installed on the build machine.
+_WINDOWS = os.environ.get("SystemRoot", r"C:\Windows")
+os.environ["PATH"] = os.pathsep.join([
+    sys.base_prefix, os.path.join(sys.base_prefix, "Scripts"),
+    os.path.join(_WINDOWS, "System32"), _WINDOWS,
+    os.path.join(_WINDOWS, "System32", "Wbem"),
+])
 
 from PyInstaller.utils.hooks import collect_submodules
 

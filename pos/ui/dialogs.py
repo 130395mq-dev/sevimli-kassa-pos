@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from ..money import som, refund_total
 from ..i18n import get_lang, tr
+from ..history import local_hhmm, local_when
 from . import theme as t
 from . import icons
 from .keypad import FullKeyboard, Keypad, Letters, touch_button
@@ -1594,7 +1595,7 @@ class ReturnSaleListDialog(BaseDialog):
         row.setContentsMargins(16, 8, 20, 8)
         row.setSpacing(12)
 
-        time = sale["created_at"][11:16]
+        time = local_hhmm(sale["created_at"])
         row.addWidget(_label(time, 14, t.MUTED))
 
         mid = QVBoxLayout()
@@ -1628,7 +1629,7 @@ class ReturnDetailDialog(BaseDialog):
         super().__init__(f"Chek {sale.get('receipt_number') or sale['number']}", width=520, parent=parent)
         self.sale = sale
 
-        when = _label(sale["created_at"][:16].replace("T", "  "), 13, t.MUTED)
+        when = _label(local_when(sale["created_at"]).strftime("%Y-%m-%d  %H:%M"), 13, t.MUTED)
         when.setAlignment(Qt.AlignCenter)
         self.root.addWidget(when)
 

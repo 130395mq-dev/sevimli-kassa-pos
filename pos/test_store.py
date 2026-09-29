@@ -10,9 +10,11 @@ ma'nosi shunda: server o'chsa ham savdo davom etadi.
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 import uuid
+from unittest import mock
 from decimal import Decimal
 from pathlib import Path
 
@@ -269,8 +271,8 @@ class OutboxTest(unittest.TestCase):
         backend = LiveBackend(hub, self.store, METHODS)
         backend.submit(self.make_cart(), self._paid_plan())
 
-        self.assertEqual(len(hub.received), 1)
-        self.assertEqual(backend.flush(), 0)
+        self.assertEqual(len(hub.received), 0)
+        self.assertEqual(backend.flush(), 1)
         self.assertEqual(backend.flush(), 0)
         self.assertEqual(len(hub.received), 1)
 
@@ -279,6 +281,51 @@ class OutboxTest(unittest.TestCase):
         plan = PaymentPlan(total=cart.total)
         plan.add_cash(cart.total)
         return plan
+
+    def test_saved_sale_ack_disk_error_keeps_same_uuid_for_retry(self):
+        hub = FakeHub(online=True)
+        backend = LiveBackend(hub, self.store, METHODS)
+        with mock.patch.object(self.store, "mark_sent", side_effect=sqlite3.OperationalError("database or disk is full")):
+            backend.submit(self.make_cart(), self._paid_plan())
+            # Failure is in the background delivery, after checkout succeeded.
+            with self.assertRaises(sqlite3.OperationalError):
+                backend.flush()
+        self.assertEqual(len(hub.received), 1)
+        original_uuid = hub.received[0]["local_uuid"]
+        self.assertEqual(self.store.pending()[0]["local_uuid"], original_uuid)
+        self.assertIn(original_uuid[:8].upper(), backend.last_receipt_number)
+        self.assertEqual(backend.flush(), 1)
+        self.assertEqual([p["local_uuid"] for p in hub.received], [original_uuid, original_uuid])
+        self.assertEqual(self.store.pending_count(), 0)
+
+    def test_saved_offline_sale_error_log_disk_failure_is_not_unsaved(self):
+        hub = FakeHub(online=False)
+        backend = LiveBackend(hub, self.store, METHODS)
+        with mock.patch.object(self.store, "note_outage", side_effect=sqlite3.OperationalError("database or disk is full")):
+            backend.submit(self.make_cart(), self._paid_plan())
+            with self.assertRaises(sqlite3.OperationalError):
+                backend.flush()
+        self.assertEqual(self.store.pending_count(), 1)
+        self.assertEqual(hub.received, [])
+
+    def test_sqlite_full_before_queue_rejects_sale_and_preserves_old_receipt(self):
+        hub = FakeHub(online=False)
+        backend = LiveBackend(hub, self.store, METHODS)
+        backend.submit(self.make_cart(), self._paid_plan())
+        before = [dict(row) for row in self.store.unsent_rows()]
+        page_count = self.store.db.execute("PRAGMA page_count").fetchone()[0]
+        self.store.db.execute(f"PRAGMA max_page_count={page_count}")
+        # A large receipt forces an allocation; SQLite returns SQLITE_FULL.
+        # The actual Windows drive is never filled.
+        hub.online = True
+        with mock.patch.object(LiveBackend, "price_type_name", new_callable=mock.PropertyMock,
+                               return_value="x" * (1024 * 1024)):
+            with self.assertRaises(sqlite3.OperationalError) as caught:
+                backend.submit(self.make_cart(), self._paid_plan())
+        self.assertEqual(caught.exception.sqlite_errorcode, sqlite3.SQLITE_FULL)
+        self.assertEqual(hub.received, [])
+        self.assertEqual([dict(row) for row in self.store.unsent_rows()], before)
+        self.assertEqual(self.store.db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
 
     # -------- yangi: navbat bloki va ikki marta pul tuzatishlari --------
 
@@ -771,7 +818,7 @@ class HistoryNumberTest(unittest.TestCase):
         hub = FakeHub(online=True)
         backend = LiveBackend(hub, self.store, METHODS)
         self._sell(backend)
-        self.assertEqual(backend.flush(), 0)
+        self.assertEqual(backend.flush(), 1)
         row = self.store.recent_sales(1)[0]
         self.assertEqual(row["sent"], 1)
         self.assertEqual(row["check_no"], 1)  # FakeHub id = 1

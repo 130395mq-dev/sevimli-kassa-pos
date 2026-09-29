@@ -106,8 +106,13 @@ def main() -> int:
     # ochadi. O'rnatilgan joydan ishlayotgan bo'lsak — davom etamiz.
     from . import installer
 
-    if installer.ensure_installed():
-        return EXIT_OK
+    try:
+        if installer.ensure_installed():
+            return EXIT_OK
+    except installer.InstallError as exc:
+        install_app = QApplication(sys.argv)
+        QMessageBox.critical(None, "Sevimli Kassa", str(exc))
+        return EXIT_HANDLED
 
     # Allaqachon o'rnatilgan bo'lsak ham — avtoyuklanish yozuvi joyidami,
     # tekshiramiz. Yorliq yaratilmay qolgan eski o'rnatmalar ham shu tufayli
@@ -127,7 +132,6 @@ def main() -> int:
     # Sog'liq bayrog'i: shu nuqtaga yetdik — exe ochildi va Python yuklandi.
     # Yangilash skripti shu bayroqni kutadi; paydo bo'lmasa rollback qiladi.
     from . import updater as _upd
-    _upd.mark_started()
 
     app = QApplication(sys.argv)
     app.setApplicationName("Sevimli Kassa")
@@ -277,6 +281,11 @@ def main() -> int:
     from .ui.main_window import MainWindow
 
     window = MainWindow(backend, animated_bg=config.animated_bg)
+    from .print_service import PrintService
+    print_service = PrintService(window)
+    print_service.status_changed.connect(window.set_printer_status)
+    print_service.notice.connect(window.flash)
+    app.aboutToQuit.connect(print_service.close)
     window.setWindowTitle(
         f"Sevimli Kassa — {info['point']} · {info['register']['name']}"
     )
@@ -400,8 +409,8 @@ def main() -> int:
         )
         # Kenglik — foydalanuvchi tanlagan qog'oz o'lchamiga qarab (80/58mm)
         text = render_sale(receipt, config.receipt_width)
-        printer.print_sale(text, config.printer, config.paper,
-                           config.receipt_width, name="chek")
+        print_service.submit(text, config.printer, config.paper,
+                             config.receipt_width, name="chek")
         sale_no["n"] += 1
 
     window.print_sale = _print_sale
@@ -907,12 +916,10 @@ def main() -> int:
                 width=config.receipt_width,
                 check_no=row.get("check_no"),   # raqam doim chiqsin (2026-09-28)
             )
-            printed, path = printer.print_sale(
+            msg = print_service.submit(
                 text, config.printer, config.paper, config.receipt_width,
                 name="chek-qayta",
             )
-            msg = (tr("Chek qayta chop etildi") if printed
-                   else tr("Printer javob bermadi. Chek faylga saqlandi: {p}").format(p=path))
             window.flash(msg)
             return msg   # tarix oynasining o'zida ham ko'rsatiladi
 
@@ -953,11 +960,9 @@ def main() -> int:
 
         def do_test(name: str, paper: str) -> None:
             width = 32 if str(paper) == "58" else 48
-            ok, _ = printer.print_text(_test_receipt_text(width), name, name="test")
-            window.flash(
-                tr("Test chek yuborildi") if ok
-                else tr("Chop etilmadi — printerni tekshiring")
-            )
+            window.flash(print_service.submit(
+                _test_receipt_text(width), name, paper, width, name="test"
+            ))
 
         dlg = PrinterSettingsDialog(
             printers, current=config.printer, paper=config.paper,
@@ -1258,10 +1263,8 @@ def main() -> int:
         update_progress = Signal(int, int)      # yuklab olish: bo'ldi, jami
         update_ready = Signal(object)           # yuklab olindi: info (+path)
         update_failed = Signal(str)
+        update_applied = Signal(bool)
         shift_synced = Signal(object)           # oflayn smena serverга ochildi
-        # «Bir login — bir kompyuter»
-        session_renewed = Signal(str)           # yangi sessiya tokeni (hello)
-        session_lost = Signal(str)              # boshqa kompyuter kirib oldi
 
     bridge = _Bridge()
 
@@ -1284,8 +1287,8 @@ def main() -> int:
         _show_login()
         login_screen.show_error(message or tr("Bu login boshqa kassada ochildi"))
 
-    bridge.session_renewed.connect(_apply_session_renewed)
-    bridge.session_lost.connect(_apply_session_lost)
+    from .session_events import SessionEvents
+    session_events = SessionEvents(hub, _apply_session_renewed, _apply_session_lost)
 
     def _apply_status(online: bool, pending: int) -> None:
         session["offline"] = not online
@@ -1536,9 +1539,18 @@ def main() -> int:
         # Kassirga «Yangilanmoqda…» ko'rsatamiz — ekran «qotib qolgandek»
         # ko'rinmasin. Dastur o'zi yopilib, yangisi ochiladi.
         _show_updating()
-        QApplication.processEvents()
+        window.setEnabled(False)
+        def apply_in_background():
+            try:
+                applied = updater.apply(path)
+            except Exception:
+                logger.exception("Yangilanish tekshiruvi bajarilmadi")
+                applied = False
+            bridge.update_applied.emit(applied)
+        threading.Thread(target=apply_in_background, daemon=True, name="pos-update-prepare").start()
 
-        if updater.apply(path):
+    def _on_update_applied(applied: bool) -> None:
+        if applied:
             # Skript ilova yopilishini kutyapti — chiqamiz. Navbat va
             # cheklar diskda, keyingi ochilishda davom etadi.
             stop_bg.set()
@@ -1548,14 +1560,16 @@ def main() -> int:
             # Yig'ilmagan muhit yoki ZIP chala — qayta urinmaymiz, ekranга
             # qaytamiz. Kassir ishlashda davom etadi (eski versiya).
             update_state["applying"] = False
-            update_state["skip"] = upd.get("version", "")
+            update_state["skip"] = (update_state.get("ready") or {}).get("version", "")
             _hide_updating()
-            logger.warning("Yangilanish qo'llanmadi (o'tkazib yuborildi): %s", path)
+            window.setEnabled(True)
+            logger.warning("Yangilanish qo'llanmadi — eski versiyada davom etiladi")
 
     bridge.version_checked.connect(_on_version_checked)
     bridge.update_progress.connect(_on_update_progress)
     bridge.update_failed.connect(_on_update_failed)
     bridge.update_ready.connect(_on_update_ready)
+    bridge.update_applied.connect(_on_update_applied)
 
     def _check_update(bg_hub: Hub) -> None:
         """Fon oqimida: versiyani so'raydi, yangisi bo'lsa yuklab oladi."""
@@ -1596,7 +1610,7 @@ def main() -> int:
 
     session_retry = {"at": 0.0}
 
-    def _watch_session(bg_hub: Hub, fresh: dict, now: float) -> None:
+    def _watch_session(bg_hub: Hub, fresh: dict, now: float, requested_session: str) -> None:
         """hello javobidagi «bir login — bir kompyuter» holati (fon oqimi).
 
         mine=True  — token uzaytirilgan bo'lsa yangilaymiz;
@@ -1606,15 +1620,16 @@ def main() -> int:
                      «Bo'shatish») — parolsiz qayta biriktiramiz (60 s da bir).
         """
         ls = fresh.get("login_session")
-        if not isinstance(ls, dict) or not session.get("cashier"):
+        if (not isinstance(ls, dict) or not session.get("cashier")
+                or not requested_session or hub.session != requested_session):
             return
         mine = ls.get("mine")
         if mine is True:
             if ls.get("session"):
-                bridge.session_renewed.emit(ls["session"])
+                session_events.renewed.emit(ls["session"], requested_session)
             return
         if mine is False:
-            bridge.session_lost.emit(ls.get("message") or "")
+            session_events.lost.emit(ls.get("message") or "", requested_session)
             return
         if now - session_retry["at"] < 60:
             return
@@ -1622,9 +1637,9 @@ def main() -> int:
         try:
             res = bg_hub.resume_session(int((session.get("cashier") or {}).get("id") or 0))
             if res.get("session"):
-                bridge.session_renewed.emit(res["session"])
+                session_events.renewed.emit(res["session"], requested_session)
         except HubBusyError as e:
-            bridge.session_lost.emit(str(e))
+            session_events.lost.emit(str(e), requested_session)
         except Exception as e:
             logger.info("Sessiyani qayta biriktirib bo'lmadi: %s", e)
 
@@ -1720,7 +1735,8 @@ def main() -> int:
                 fresh = None
                 # Sessiya tokeni bilan — server «kompyuter tirik» belgisini
                 # yangilaydi va tokenni uzaytiradi
-                bg_hub.session = getattr(hub, "session", "") or ""
+                requested_session = getattr(hub, "session", "") or ""
+                bg_hub.session = requested_session
                 try:
                     fresh = bg_hub.hello(queue={"local_pending": bg_store.unsent_count(), "local_stuck": bg_store.stuck_count(), "local_error": bg_store.queue_error()})
                     # Keshni yangilab turamiz — keyingi ochilishда server
@@ -1739,7 +1755,7 @@ def main() -> int:
                 if fresh is not None:
                     # Server ↔ MoySklad chirog'i — har so'rovda
                     bridge.moysklad.emit((fresh.get("links") or {}).get("moysklad"))
-                    _watch_session(bg_hub, fresh, now)
+                    _watch_session(bg_hub, fresh, now, requested_session)
                     # Paneldan o'zgartirish berilgan bo'lsa — darhol qo'llash
                     fp = settings_fingerprint(fresh)
                     if fp != last_fp:
@@ -1755,7 +1771,6 @@ def main() -> int:
     window.sale_finished.connect(lambda: QTimer.singleShot(800, _maybe_apply_update))
 
     bg_thread = threading.Thread(target=_bg_loop, name="sevimli-bg", daemon=True)
-    bg_thread.start()
 
     def _stop() -> None:
         stop_bg.set()
@@ -1782,6 +1797,11 @@ def main() -> int:
     # Aks holda kirish ekrani: xodim login-parolini teradi.
     if not _resume_saved_login() and not _resume_after_update():
         _show_login()
+    # Resume rotates the server session generation. Starting the worker
+    # earlier lets a hello with the OLD token revoke this new login.
+    bg_thread.start()
+    # Confirm the main/login UI from the running event loop.
+    QTimer.singleShot(0, _upd.mark_started)
     code = app.exec()
     _stop()
     logging.shutdown()

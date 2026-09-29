@@ -14,12 +14,23 @@ kiosk-dastur — biror yordamchi oqim yoki Qt obyekti tufayli jarayon
 import os
 import sys
 
-from pos.main import main
-
 if __name__ == "__main__":
     code = 1
     try:
-        code = int(main() or 0)
+        if "--check-runtime" in sys.argv:
+            # Before importing main/config or running installer/autostart.
+            if len(sys.argv) != 3 or sys.argv[1] != "--check-runtime":
+                raise ValueError("Usage: --check-runtime NEW_RESULT_DIRECTORY")
+            from pos.runtime_check import run
+            code = run(sys.argv[2])
+        elif "--apply-update" in sys.argv:
+            if len(sys.argv) != 3 or sys.argv[1] != "--apply-update":
+                raise ValueError("Usage: --apply-update PLAN_FILE")
+            from pos.update_worker import run
+            code = run(sys.argv[2])
+        else:
+            from pos.main import main
+            code = int(main() or 0)
     finally:
         try:
             sys.stdout.flush()

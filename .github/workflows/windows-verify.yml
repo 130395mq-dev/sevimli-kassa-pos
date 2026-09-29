@@ -53,14 +53,20 @@ jobs:
       - name: Kutubxonalar
         run: |
           pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw "Kutubxonalar o'rnatilmadi" }
           pip install pyinstaller==6.11.1
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller o'rnatilmadi" }
 
       - name: 1. Kassa testlari (Windows)
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m unittest pos.test_pos pos.test_store pos.test_links pos.test_update pos.test_split pos.test_session pos.test_reliability pos.test_receipt_integrity
+          python -m unittest pos.test_pos pos.test_store pos.test_links pos.test_update pos.test_deployment pos.test_split pos.test_session pos.test_reliability pos.test_receipt_integrity pos.test_ui_regressions pos.test_print_service
+          if ($LASTEXITCODE -ne 0) { throw "Kassa testlari yiqildi" }
           python -m shared.test_receipt
+          if ($LASTEXITCODE -ne 0) { throw "Chek testlari yiqildi" }
+          python tools/test_windows_update.py --result-directory (Join-Path $env:RUNNER_TEMP 'update-worker-tests')
+          if ($LASTEXITCODE -ne 0) { throw "Yangilash/rollback jarayon sinovlari yiqildi" }
 
       - name: 2. Lokal baza — eski -> yangi -> eski, navbat
         shell: pwsh
@@ -91,6 +97,7 @@ jobs:
         id: zip
         shell: pwsh
         run: |
+          ./tools/check_runtime.ps1 -Exe 'dist/SevimliKassa/SevimliKassa.exe' -ResultDirectory (Join-Path $env:RUNNER_TEMP 'audit-runtime-check')
           if (-not (Test-Path "dist\SevimliKassa\SevimliKassa.exe")) { throw "SevimliKassa.exe yig'ilmadi" }
           $v = (Select-String -Path "pos\version.py" -Pattern 'VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
           Compress-Archive -Path dist/SevimliKassa -DestinationPath "dist/SevimliKassa-$v-SINOV.zip" -Force
@@ -106,7 +113,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          # Alohida APPDATA/LOCALAPPDATA — runner'ning o'zidagi hech narsaga tegmaymiz
+          # FAQAT vaqtinchalik GitHub-hosted runner uchun. APPDATA izolyatsiyasi
+          # installer yaratadigan HKCU/Startup/Desktop yozuvlarini ajratmaydi;
+          # installer boshqa SevimliKassa jarayonlarini ham yopadi.
+          # Bu qadamni ishlayotgan kassa yoki egasining kompyuterida bajarmang.
           $sandbox = Join-Path $env:RUNNER_TEMP 'kassa-sandbox'
           $env:APPDATA = Join-Path $sandbox 'Roaming'
           $env:LOCALAPPDATA = Join-Path $sandbox 'Local'
@@ -116,11 +126,12 @@ jobs:
           '{"server_url": "http://127.0.0.1:9", "token": "ci-dummy-not-a-real-token"}' |
             Out-File -Encoding utf8NoBOM (Join-Path $data 'config.json')
           python tools/ci_db_check.py --old (Join-Path $env:RUNNER_TEMP 'old') --seed (Join-Path $data 'kassa.db')
+          if ($LASTEXITCODE -ne 0) { throw "Sinov bazasi yaratilmadi" }
 
           function Start-Kassa($exe, $expect) {
             $flag = Join-Path $data 'update\run-ok'
             Remove-Item $flag -ErrorAction SilentlyContinue
-            Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe)
+            Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -WindowStyle Hidden
             $ok = $false
             for ($i = 0; $i -lt 90; $i++) {
               Start-Sleep -Seconds 1
@@ -167,7 +178,7 @@ jobs:
           $root = 'C:\Sevimli'
           if (Test-Path $root) { throw "C:\Sevimli runner'da bo'lmasligi kerak edi" }
           $remote = Join-Path $env:RUNNER_TEMP 'remote-kassa.git'
-          git init -q --bare $remote
+          git init -q --bare -b main $remote
           $seed = Join-Path $env:RUNNER_TEMP 'seed'
           git init -q -b main $seed
           New-Item -ItemType Directory -Force -Path "$seed\pos" | Out-Null
@@ -179,7 +190,8 @@ jobs:
           $mainBefore = (git --git-dir $remote rev-parse refs/heads/main)
 
           New-Item -ItemType Directory -Force -Path $root | Out-Null
-          git clone -q $remote "$root\kassa"
+          git clone -q -b main $remote "$root\kassa"
+          if ($LASTEXITCODE -ne 0) { throw "Sinov kloni yaratilmadi" }
           git -C "$root\kassa" config user.name ci
           git -C "$root\kassa" config user.email ci@example.invalid
           $script = (Resolve-Path 'tools\avto_yuklash.ps1').Path

@@ -38,6 +38,13 @@ def tr(text: str) -> str:
 
 #: O'zbekcha manba → ruscha. Kalit — kodda yozilgan aynan o'sha satr.
 _RU: dict[str, str] = {
+    "Chek fayli saqlanmadi. Savdo tarixini tekshiring.": "Файл чека не сохранён. Проверьте историю продаж.",
+    "Chek chop etish uchun navbatga olindi. Qog'oz chiqishini tekshiring.": "Чек поставлен в очередь печати. Проверьте выход бумаги.",
+    "Chop etish tasdiqlanmadi. Printerni va Windows navbatini tekshiring; takror bosishga shoshilmang. Chek fayli: {p}": "Печать не подтверждена. Проверьте принтер и очередь Windows; не спешите печатать повторно. Файл чека: {p}",
+    "Chek Windows navbatidan chiqdi. Qog'ozni tekshiring.": "Чек вышел из очереди Windows. Проверьте бумагу.",
+    "Printer: {n} ta chek kutilmoqda. Kabel va qog'ozni tekshiring. Qayta chop etmang — navbatdagi chek ulanish tiklanganda chiqishi mumkin.": "Принтер: ожидают {n} чеков. Проверьте кабель и бумагу. Не печатайте повторно — после подключения чек может выйти из очереди.",
+    "Printer: {n} ta chek navbatda.": "Принтер: в очереди {n} чеков.",
+    "Tekshirish kerak: {n} ta. ": "Нужно проверить: {n}. ",
     # --- umumiy tugmalar ---
     "Bekor": "Отмена",
     "Yopish": "Закрыть",

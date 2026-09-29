@@ -44,7 +44,7 @@ jobs:
         run: python -c "import pos.main, pos.ui.main_window, pos.ui.payment_dialog, pos.ui.split_payment, pos.ui.login_screen, pos.ui.dialogs"
       - name: Kassa testlari
         run: |
-          python -m unittest pos.test_pos pos.test_store pos.test_links pos.test_update pos.test_split pos.test_session pos.test_reliability pos.test_receipt_integrity
+          python -m unittest pos.test_pos pos.test_store pos.test_links pos.test_update pos.test_deployment pos.test_split pos.test_session pos.test_reliability pos.test_receipt_integrity pos.test_ui_regressions pos.test_print_service
           python -m shared.test_receipt
 
       - name: Validate PowerShell scripts
@@ -111,6 +111,7 @@ jobs:
       - name: Tekshirish
         shell: pwsh
         run: |
+          ./tools/check_runtime.ps1 -Exe 'dist/SevimliKassa/SevimliKassa.exe' -ResultDirectory (Join-Path $env:RUNNER_TEMP 'release-runtime-check')
           if (-not (Test-Path "dist\SevimliKassa\SevimliKassa.exe")) { throw "SevimliKassa.exe yig'ilmadi" }
           if (-not (Test-Path "dist\SevimliKassa\_internal\ucrtbase.dll")) { Write-Warning "ucrtbase.dll qadalmadi (eski Windows'da ochilmasligi mumkin)" }
           Compress-Archive -Path dist/SevimliKassa -DestinationPath dist/SevimliKassa.zip -Force

@@ -56,6 +56,17 @@ for uuid, payload in data.get("queue", {}).items():
     s.queue(uuid, payload, "2026-09-28T10:00:00+05:00")
 for uuid, payload in data.get("cash", {}).items():
     s.queue_cash(uuid, payload, "2026-09-28T10:00:01+05:00")
+if data.get("gui_fixture"):
+    # An offline POS needs its cached hello and a nonempty catalogue. Without
+    # these it waits at a connection dialog rather than reaching its main UI.
+    s.set("last_hello", json.dumps({
+        "point": "CI - SYNTHETIC", "register": {"code": "ci", "name": "CI"},
+        "payment_methods": [{"code": "cash", "name": "CI cash", "is_cash": True}],
+        "cashiers": [], "shift": None, "settings": {}, "links": {},
+    }))
+    s.replace_products([{"id": 1, "ms_id": "ci-only", "name": "CI product",
+        "code": "CI1", "barcode": "4780001000017", "price": 300000,
+        "is_weight": False, "plu": None, "tracked": False, "stock": 1}])
 print(json.dumps(out))
 sys.stdout.flush()
 os._exit(0)      # close() yo'q — jarayon keskin to'xtadi
@@ -98,7 +109,7 @@ def main() -> int:
         ap.error("--old kerak")
     old, new = args.old.resolve(), HERE
     if args.seed:
-        step(old, args.seed.resolve(), {"queue": RECEIPTS, "cash": dict([CASH])})
+        step(old, args.seed.resolve(), {"queue": RECEIPTS, "cash": dict([CASH]), "gui_fixture": True})
         print(f"Navbatli baza yaratildi: {args.seed}")
         return 0
 
