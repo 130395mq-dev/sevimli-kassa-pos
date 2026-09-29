@@ -491,6 +491,97 @@ class PriceTypeTest(unittest.TestCase):
         self.backend.setup_price_types([{"id": "chk", "name": "Чакана нарх"}], "chk")
         self.assertEqual(self.backend.price_type_id, "chk")
 
+    def test_panel_overrides_saved_type_even_after_restart(self):
+        self.store.close()
+        self.store = Store(self.path)
+        self.backend = LiveBackend(FakeHub(), self.store, METHODS)
+        self.backend.setup_price_types(
+            [{"id": "chk", "name": "Chakana"}, {"id": "ulg", "name": "Ulgurji"}], "ulg")
+        self.assertEqual(self.backend.price_type_id, "ulg")
+        self.assertEqual(self.store.by_barcode("1").price, 52_000_00)
+
+    def test_panel_waits_for_open_receipt_and_drained_outbox(self):
+        from .price_policy import PricePolicy
+        cart = Cart()
+        cart.add(self.store.by_barcode("1"), 2)
+        cart.receipt_discount = 1
+        before = cart.total
+        policy = PricePolicy(self.backend, cart)
+        policy.offer({"price_types": self.backend.price_types,
+                      "default_price_type": "ulg", "price_policy_revision": "new-policy"})
+        self.assertEqual(cart.total, before)
+        self.assertEqual(self.backend.price_type_id, "chk")
+        plan = PaymentPlan(cart.total)
+        plan.add_cash(cart.total)
+        self.backend.submit(cart, plan)
+        cart.clear()
+        self.assertTrue(policy.apply_if_idle())
+        self.assertEqual(self.backend.price_type_id, "ulg")
+        self.assertNotIn("price_policy_ack", self.store.hello_queue())
+        self.backend.flush()
+        sent = self.backend.hub.received[0]
+        self.assertEqual(sent["price_type_id"], "chk")
+        self.assertEqual(sent["items"][0]["price"], 55_000_00)
+        self.assertEqual(sum(p["amount"] for p in sent["payments"]), before)
+        self.assertEqual(self.store.hello_queue()["price_policy_ack"], "new-policy")
+        cart.add(self.store.by_barcode("1"), 1)
+        self.assertEqual(cart.total, 52_000_00)
+
+    def test_multiple_panel_changes_keep_latest_until_payment_closes(self):
+        from .price_policy import PricePolicy
+        busy = [True]
+        cart = Cart()
+        policy = PricePolicy(self.backend, cart, busy=lambda: busy[0])
+        types = self.backend.price_types
+        policy.offer({"price_types": types, "default_price_type": "ulg", "price_policy_revision": "b"})
+        policy.offer({"price_types": types, "default_price_type": "chk", "price_policy_revision": "c"})
+        self.assertFalse(policy.apply_if_idle())
+        busy[0] = False
+        self.assertTrue(policy.apply_if_idle())
+        self.assertEqual(self.backend.price_type_id, "chk")
+        self.assertEqual(self.store.get("price_policy_ack"), "c")
+
+    def test_stuck_receipt_prevents_retiring_previous_price(self):
+        self.store.set("price_policy_ack", "new-policy")
+        cart = Cart()
+        cart.add(self.store.by_barcode("1"))
+        plan = PaymentPlan(cart.total)
+        plan.add_cash(cart.total)
+        self.backend.submit(cart, plan)
+        uid = self.store.pending()[0]["local_uuid"]
+        for _ in range(20):
+            self.store.mark_failed(uid, "invalid")
+        self.assertNotIn("price_policy_ack", self.store.hello_queue())
+
+    def test_checkout_racing_hello_cannot_ack_new_policy_with_stale_empty_count(self):
+        self.store.set("price_policy_ack", "old-policy")
+        cart = Cart()
+        cart.add(self.store.by_barcode("1"))
+        plan = PaymentPlan(cart.total)
+        plan.add_cash(cart.total)
+        connection = self.store.db
+        injected = []
+
+        def execute(sql, params=()):
+            cursor = connection.execute(sql, params)
+            if "COUNT(*)" in sql and "outbox" in sql and not injected:
+                rows = cursor.fetchall()  # Capture the background read before checkout commits.
+                injected.append(True)
+                self.backend.submit(cart, plan)
+                self.store.set("price_policy_ack", "new-policy")
+                return mock.Mock(fetchone=lambda: rows[0])
+            return cursor
+
+        self.store.db = mock.Mock(wraps=connection)
+        self.store.db.execute.side_effect = execute
+        try:
+            reported = self.store.hello_queue()
+        finally:
+            self.store.db = connection
+        self.assertTrue(injected)
+        self.assertEqual(self.store.unsent_count(), 1)
+        self.assertNotEqual(reported.get("price_policy_ack"), "new-policy")
+
     def test_chek_qayta_narxlanadi(self):
         cart = Cart()
         cart.add(self.store.by_barcode("1"), 2)

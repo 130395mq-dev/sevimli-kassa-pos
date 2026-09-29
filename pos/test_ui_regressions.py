@@ -15,6 +15,133 @@ from .store import Store
 from .test_store import FakeHub, METHODS, PRODUCTS
 
 
+class PanelPriceCheckoutTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_panel_change_during_payment_keeps_paid_and_printed_amount(self):
+        from .price_policy import bind_price_policy
+        from .test_store import PriceTypeTest
+        from .ui.main_window import MainWindow
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(Path(folder) / "kassa.db")
+            store.replace_products(PriceTypeTest.ROWS)
+            backend = LiveBackend(FakeHub(), store, METHODS)
+            types = [{"id": "chk", "name": "Chakana"}, {"id": "ulg", "name": "Ulgurji"}]
+            backend.setup_price_types(types, "chk")
+            window = MainWindow(backend)
+            policy = bind_price_policy(backend, window)
+            policy.offer({"price_types": types, "default_price_type": "chk", "price_policy_revision": "a"})
+            printed = []
+            window.print_sale = lambda cart, plan: printed.append((cart.total, backend.price_type_id))
+            window.cart.add(store.by_barcode("1"))
+            window.refresh()
+            plan = PaymentPlan(window.cart.total)
+            plan.add_cash(window.cart.total)
+            try:
+                with patch("pos.ui.main_window.PaymentDialog") as dialog:
+                    dialog.Accepted = 1
+                    dialog.return_value.plan = plan
+                    def while_paying():
+                        policy.offer({"price_types": types, "default_price_type": "ulg", "price_policy_revision": "b"})
+                        self.assertEqual(window.cart.total, 55_000_00)
+                        self.assertEqual(window.price_btn.text(), "Chakana")
+                        return 1
+                    dialog.return_value.exec.side_effect = while_paying
+                    window.open_payment()
+                self.assertEqual(printed, [(55_000_00, "chk")])
+                self.assertTrue(window.cart.is_empty)
+                self.assertEqual(window.price_btn.text(), "Ulgurji")
+                self.assertFalse(window.price_btn.isEnabled())
+                self.assertEqual(store.by_barcode("1").price, 52_000_00)
+                payload = json.loads(store.pending()[0]["payload"])
+                self.assertEqual(payload["price_type_id"], "chk")
+                self.assertEqual(payload["payments"][0]["amount"], 55_000_00)
+            finally:
+                policy.timer.stop()
+                window.close()
+                store.close()
+
+
+class ParkedCartPriceTest(unittest.TestCase):
+    """Kechiktirilgan (park) chek va panel narx turi (2026-09-29 ko'rib chiqish).
+
+    1) `open_parked` `window.cart` ni YANGI obyektga almashtiradi. Siyosat eski
+       obyektga qarab qolsa, ochiq chek paytida narx turi almashib ketardi.
+    2) Park paytidagi narx turi hozirgisidan farq qilsa, chek joriy turdagi
+       narxga o'tkazilishi kerak — aks holda server «narx katalogga mos emas»
+       deb rad etadi va to'langan chek navbatda tiqilib qoladi.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _setup(self, folder):
+        from .price_policy import bind_price_policy
+        from .test_store import PriceTypeTest
+        from .ui.main_window import MainWindow
+        store = Store(Path(folder) / "kassa.db")
+        store.replace_products(PriceTypeTest.ROWS)
+        backend = LiveBackend(FakeHub(), store, METHODS)
+        types = [{"id": "chk", "name": "Chakana"}, {"id": "ulg", "name": "Ulgurji"}]
+        backend.setup_price_types(types, "chk")
+        window = MainWindow(backend)
+        policy = bind_price_policy(backend, window)
+        policy.offer({"price_types": types, "default_price_type": "chk", "price_policy_revision": "a"})
+        return store, backend, window, policy, types
+
+    def test_unparked_open_cart_keeps_price_type_until_finished(self):
+        from .cart import cart_from_dict, cart_to_dict
+        with tempfile.TemporaryDirectory() as folder:
+            store, backend, window, policy, types = self._setup(folder)
+            try:
+                parked = Cart()
+                parked.add(store.by_barcode("1"))
+                window.cart = cart_from_dict(cart_to_dict(parked))   # open_parked bilan bir xil
+                window.refresh()
+                policy.offer({"price_types": types, "default_price_type": "ulg", "price_policy_revision": "b"})
+                policy.apply_if_idle()
+                self.assertEqual(backend.price_type_id, "chk")        # ochiq chek — eski tur
+                window.cart.clear()
+                window.refresh()
+                policy.apply_if_idle()
+                self.assertEqual(backend.price_type_id, "ulg")        # bo'sh — yangi tur
+            finally:
+                policy.timer.stop()
+                window.close()
+                store.close()
+
+    def test_parked_cart_repriced_to_current_type_on_restore(self):
+        from .cart import cart_to_dict
+        from .price_policy import restore_parked
+        with tempfile.TemporaryDirectory() as folder:
+            store, backend, window, policy, types = self._setup(folder)
+            try:
+                parked = Cart()
+                parked.add(store.by_barcode("1"))
+                self.assertEqual(parked.total, 55_000_00)             # chakana
+                data = cart_to_dict(parked)
+                policy.offer({"price_types": types, "default_price_type": "ulg", "price_policy_revision": "b"})
+                self.assertEqual(backend.price_type_id, "ulg")
+                cart, changed = restore_parked(backend, data)
+                self.assertEqual(changed, 1)
+                self.assertEqual(cart.total, 52_000_00)               # joriy (ulgurji) narx
+                plan = PaymentPlan(cart.total)
+                plan.add_cash(cart.total)
+                backend.submit(cart, plan)
+                payload = json.loads(store.pending()[0]["payload"])
+                self.assertEqual(payload["price_type_id"], "ulg")
+                self.assertEqual(payload["items"][0]["price"], 52_000_00)
+            finally:
+                policy.timer.stop()
+                window.close()
+                store.close()
+
+
 class SaleQueueOnlyTest(unittest.TestCase):
     def test_checkout_never_waits_for_network_and_survives_restart(self):
         with tempfile.TemporaryDirectory() as folder:
