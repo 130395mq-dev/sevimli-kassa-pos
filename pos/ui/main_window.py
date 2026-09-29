@@ -398,6 +398,7 @@ class MainWindow(QMainWindow):
     """
 
     sale_finished = Signal()
+    cart_changed = Signal()
     price_type_clicked = Signal()
 
     def __init__(self, backend, parent=None, animated_bg: bool = True,
@@ -1360,3 +1361,4 @@ class MainWindow(QMainWindow):
             self.customer_row._label.setText("   ·   ".join(bits))
         else:
             self.customer_row._label.setText(tr("tanlash uchun bosing"))
+        self.cart_changed.emit()

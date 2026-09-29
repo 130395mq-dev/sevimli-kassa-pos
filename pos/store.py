@@ -478,6 +478,14 @@ class Store:
     def unsent_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM outbox WHERE sent=0").fetchone()[0]
 
+    def hello_queue(self) -> dict:
+        pending = self.unsent_count()
+        result = {"local_pending": pending, "local_stuck": self.stuck_count(),
+                  "local_error": self.queue_error()}
+        if not pending:
+            result["price_policy_ack"] = self.get("price_policy_ack") or ""
+        return result
+
     def queue_error(self) -> str:
         row = self.db.execute("SELECT local_uuid, last_error FROM outbox WHERE sent=0 AND last_error<>'' ORDER BY created_at LIMIT 1").fetchone()
         return f"{row['local_uuid']}: {row['last_error']}" if row else ""

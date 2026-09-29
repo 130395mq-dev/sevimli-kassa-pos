@@ -681,42 +681,13 @@ def main() -> int:
 
     # ------------------------------------------------------- narx turi
     #
-    # Chakana / ulgurji. Kassir sarlavhadagi tugmani bosib almashtiradi
-    # (panelda ruxsat bo'lsa). Tanlov kassada saqlanadi. Almashtirilganda
-    # chekdagi mavjud qatorlar ham yangi narxga o'tadi.
+    # Narx turi faqat paneldan; ochiq chek tugaguncha joriy tur saqlanadi.
     def _refresh_price_ui() -> None:
         window.set_price_type(
             backend.price_type_name, backend.price_type_is_default,
-            bool(kset.get("allow_price_type_switch", True)) and len(backend.price_types) > 1,
+            False,  # Narx turini faqat panel belgilaydi.
         )
 
-    def choose_price_type() -> None:
-        from .ui.dialogs import PickDialog
-
-        if not kset.get("allow_price_type_switch", True):
-            window.flash(tr("Narx turini almashtirish paneldan taqiqlangan"))
-            return
-        rows = []
-        for p in backend.price_types:
-            mark = "✓  " if p["id"] == backend.price_type_id else "     "
-            rows.append((mark + p["name"], p["id"]))
-        dlg = PickDialog(tr("Narx turi"), rows, pick_text=tr("TANLASH"), parent=window)
-        if dlg.exec() != PickDialog.Accepted or not dlg.chosen:
-            return
-        if dlg.chosen == backend.price_type_id:
-            return
-        backend.set_price_type(dlg.chosen)
-        changed = window.cart.reprice(dlg.chosen)
-        _refresh_price_ui()
-        window.fill_catalog(backend.search(window.scan_input.text().strip()))
-        window.refresh()
-        if changed:
-            window.flash(tr("Narx turi: {n} — chekdagi {c} ta qator qayta narxlandi").format(
-                n=backend.price_type_name, c=changed))
-        else:
-            window.flash(tr("Narx turi: {n}").format(n=backend.price_type_name))
-
-    window.price_type_clicked.connect(choose_price_type)
     _refresh_price_ui()
 
     # Dialoglarni backend'ga ulaymiz — backend Qt'ni bilmasligi kerak
@@ -1356,15 +1327,17 @@ def main() -> int:
     bridge.catalog.connect(_apply_catalog)
     bridge.refresh_stage.connect(sync_overlay.set_stage)
 
+    from .price_policy import bind_price_policy
+    price_policy = bind_price_policy(backend, window)
+    price_policy.offer(info)
+
     def _apply_settings(fresh: dict) -> None:
         # Panel sozlamalari o'sha lug'at obyektida — dialoglar `kset` ga
         # qaraydi, shuning uchun joyida yangilaymiz (yangi obyekt emas).
         kset.clear()
         kset.update(fresh.get("settings") or {})
         info.update(fresh)
-        backend.setup_price_types(
-            fresh.get("price_types") or [], fresh.get("default_price_type") or ""
-        )
+        price_policy.offer(fresh)
         backend.track_stock = bool(kset.get("track_stock"))
         _refresh_price_ui()
         # To'lov turlari — panelda qo'shilgan/olib tashlangan/nomi
@@ -1699,7 +1672,7 @@ def main() -> int:
                     # bo'lsa, shu yerda kassaga yetadi.
                     bridge.refresh_stage.emit(0)
                     try:
-                        fresh = bg_hub.hello(queue={"local_pending": bg_store.unsent_count(), "local_stuck": bg_store.stuck_count(), "local_error": bg_store.queue_error()})
+                        fresh = bg_hub.hello(queue=bg_store.hello_queue())
                         bg_store.set("last_hello", _json.dumps(fresh, ensure_ascii=False))
                         last_fp = settings_fingerprint(fresh)
                         bridge.settings_refreshed.emit(fresh)
@@ -1738,7 +1711,7 @@ def main() -> int:
                 requested_session = getattr(hub, "session", "") or ""
                 bg_hub.session = requested_session
                 try:
-                    fresh = bg_hub.hello(queue={"local_pending": bg_store.unsent_count(), "local_stuck": bg_store.stuck_count(), "local_error": bg_store.queue_error()})
+                    fresh = bg_hub.hello(queue=bg_store.hello_queue())
                     # Keshni yangilab turamiz — keyingi ochilishда server
                     # o'chiq bo'lsa ham eng so'nggi holat (smena, sozlama)
                     # bilan oflayn davom etiladi.

@@ -15,6 +15,56 @@ from .store import Store
 from .test_store import FakeHub, METHODS, PRODUCTS
 
 
+class PanelPriceCheckoutTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_panel_change_during_payment_keeps_paid_and_printed_amount(self):
+        from .price_policy import bind_price_policy
+        from .test_store import PriceTypeTest
+        from .ui.main_window import MainWindow
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(Path(folder) / "kassa.db")
+            store.replace_products(PriceTypeTest.ROWS)
+            backend = LiveBackend(FakeHub(), store, METHODS)
+            types = [{"id": "chk", "name": "Chakana"}, {"id": "ulg", "name": "Ulgurji"}]
+            backend.setup_price_types(types, "chk")
+            window = MainWindow(backend)
+            policy = bind_price_policy(backend, window)
+            policy.offer({"price_types": types, "default_price_type": "chk", "price_policy_revision": "a"})
+            printed = []
+            window.print_sale = lambda cart, plan: printed.append((cart.total, backend.price_type_id))
+            window.cart.add(store.by_barcode("1"))
+            window.refresh()
+            plan = PaymentPlan(window.cart.total)
+            plan.add_cash(window.cart.total)
+            try:
+                with patch("pos.ui.main_window.PaymentDialog") as dialog:
+                    dialog.Accepted = 1
+                    dialog.return_value.plan = plan
+                    def while_paying():
+                        policy.offer({"price_types": types, "default_price_type": "ulg", "price_policy_revision": "b"})
+                        self.assertEqual(window.cart.total, 55_000_00)
+                        self.assertEqual(window.price_btn.text(), "Chakana")
+                        return 1
+                    dialog.return_value.exec.side_effect = while_paying
+                    window.open_payment()
+                self.assertEqual(printed, [(55_000_00, "chk")])
+                self.assertTrue(window.cart.is_empty)
+                self.assertEqual(window.price_btn.text(), "Ulgurji")
+                self.assertFalse(window.price_btn.isEnabled())
+                self.assertEqual(store.by_barcode("1").price, 52_000_00)
+                payload = json.loads(store.pending()[0]["payload"])
+                self.assertEqual(payload["price_type_id"], "chk")
+                self.assertEqual(payload["payments"][0]["amount"], 55_000_00)
+            finally:
+                policy.timer.stop()
+                window.close()
+                store.close()
+
+
 class SaleQueueOnlyTest(unittest.TestCase):
     def test_checkout_never_waits_for_network_and_survives_restart(self):
         with tempfile.TemporaryDirectory() as folder:

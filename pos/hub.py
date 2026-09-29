@@ -51,7 +51,7 @@ ASK_CANCEL = object()
 #: ochilmasdan darhol qo'llaydi. `shift` va `server_time` bu yerga
 #: kirmaydi: ular har so'rovda o'zgaradi, sozlama emas.
 SETTINGS_KEYS = (
-    "payment_methods", "settings", "price_types", "default_price_type",
+    "payment_methods", "settings", "price_types", "default_price_type", "price_policy_revision",
     "receipt_width", "market", "point",
 )
 
@@ -469,14 +469,11 @@ class LiveBackend:
     # --------------------------------------------------------- narx turi
 
     def setup_price_types(self, price_types: list[dict], default_id: str) -> None:
-        """Serverdan kelgan ro'yxatni o'rnatadi. Saqlangan tanlov ro'yxatda
-        bo'lmasa (tur o'chirilgan) — asosiysiga qaytadi."""
+        """Narx turi faqat paneldan: oldingi lokal tanlov ustun kelmaydi."""
         self.price_types = list(price_types or [])
         self.default_price_type = (default_id or "").lower()
         ids = {p["id"] for p in self.price_types}
-        current = self.store.price_type_id
-        if current not in ids:
-            self.store.set_price_type(self.default_price_type if self.default_price_type in ids else None)
+        self.store.set_price_type(self.default_price_type if self.default_price_type in ids else None)
 
     @property
     def price_type_id(self) -> str:
