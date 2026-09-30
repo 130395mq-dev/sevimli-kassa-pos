@@ -53,6 +53,28 @@ PRICE_PREFIXES: tuple[str, ...] = ()
 # tasodifan tarozi prefiksiga o'xshagan oddiy shtrix-kod.
 MAX_SCALE_WEIGHT_KG = Decimal("50")
 
+# Skaner kodni KLAVIATURA tugmalari sifatida «yozadi». Raqamlar har qanday
+# tilda bir xil chiqadi, harflar esa Windows tiliga bog'liq: ruscha tartibda
+# H tugmasi «Р», T tugmasi «Е» bo'lib yoziladi. 2026-09-30: Code128 kod
+# «HT00026010093» kassaga «РЕ00026010093» bo'lib kelib, tovar topilmagan —
+# monoblokda klaviatura yo'q, kassir tilni almashtira olmaydi. Kirill harfini
+# o'sha tugmadagi lotin harfiga qaytaramiz (ruscha ЙЦУКЕН; o'zbek kirill
+# tartibida Щ o'rnida Ў, Ы o'rnida Қ). Б/Ю — vergul va nuqta tugmalari.
+_LATIN_KEYS = "qwertyuiopasdfghjklzxcvbnm"
+_RU_KEYS = "йцукенгшщзфывапролдячсмить"
+_KEY_MAP = {c: l for c, l in zip(_RU_KEYS, _LATIN_KEYS)}
+_KEY_MAP.update({"ў": "o", "қ": "s"})
+_KEY_MAP.update({c.upper(): l.upper() for c, l in list(_KEY_MAP.items())})
+_KEY_MAP.update({"б": ",", "Б": "<", "ю": ".", "Ю": ">"})
+
+
+def keyboard_to_latin(code: str) -> str:
+    """Kirill tartibida «yozilgan» kodni lotin tugmalariga qaytaradi.
+
+    «РЕ00026010093» → «HT00026010093». Raqamlar va lotin harflari
+    o'zgarmaydi — oddiy EAN-13 kodlarga ta'sir yo'q."""
+    return "".join(_KEY_MAP.get(ch, ch) for ch in code)
+
 
 @dataclass
 class Scan:

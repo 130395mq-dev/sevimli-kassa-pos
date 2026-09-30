@@ -262,6 +262,8 @@ _RU: dict[str, str] = {
     "Narx turini almashtirish paneldan taqiqlangan": "Смена типа цены запрещена в панели",
     "Narx turi: {n} — chekdagi {c} ta qator qayta narxlandi": "Тип цены: {n} — {c} строк чека пересчитано",
     "Narx turi: {n}": "Тип цены: {n}",
+    "Yangi narx turi keyingi chekdan qo'llanadi": "Новый тип цены применится со следующего чека",
+    "Chek joriy narx turiga o'tkazildi: {n}": "Чек переведён на текущий тип цены: {n}",
 
     # --- qayta ulanish ---
     "Qayta ulanish kerak": "Нужно переподключить кассу",
