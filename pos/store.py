@@ -302,20 +302,39 @@ class Store:
 
     def by_barcode_qty(self, code: str):
         """Kod → (tovar, nechta dona). Oddiy kod — 1; upakovka kodi —
-        upakovkadagi dona soni (masalan 6). Topilmasa None."""
+        upakovkadagi dona soni (masalan 6). Topilmasa None.
+
+        Avval AYNAN shu kod. Topilmasa va kodda harf bo'lsa (Code128,
+        masalan «HT00026010093») — klaviatura tili yoki Caps Lock buzgan
+        bo'lishi mumkin: kirill harflarni lotin tugmalariga qaytarib, keyin
+        katta-kichik harfni farqlamay qidiramiz (2026-09-30). Raqamli
+        kodlar (EAN-13, tarozi) bu yo'lga tushmaydi."""
+        from .barcode import keyboard_to_latin
+
         code = (code or "").strip()
         if not code:
             return None
+        found = self._barcode_qty(code)
+        if found is None and any(ch.isalpha() for ch in code):
+            latin = keyboard_to_latin(code)
+            if latin != code:
+                found = self._barcode_qty(latin)
+            if found is None:
+                found = self._barcode_qty(latin, nocase=True)
+        return found
+
+    def _barcode_qty(self, code: str, nocase: bool = False):
+        eq = "= ? COLLATE NOCASE" if nocase else "= ?"
         row = self.db.execute(
             "SELECT p.*, b.quantity AS pack_qty FROM products p "
-            "JOIN barcodes b ON b.product_id = p.id WHERE b.code = ? "
+            f"JOIN barcodes b ON b.product_id = p.id WHERE b.code {eq} "
             "ORDER BY b.quantity LIMIT 1",
             (code,),
         ).fetchone()
         qty = float(row["pack_qty"] or 1) if row else 1.0
         if not row:
             row = self.db.execute(
-                "SELECT * FROM products WHERE barcode = ?", (code,)
+                f"SELECT * FROM products WHERE barcode {eq}", (code,)
             ).fetchone()
             qty = 1.0
         if not row:
