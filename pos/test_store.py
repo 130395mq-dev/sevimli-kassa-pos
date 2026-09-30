@@ -1116,3 +1116,60 @@ class HistoryNumberTest(unittest.TestCase):
         self.assertIn("23.09.2026 14:54", text)
         self.assertNotIn("JAMI", text)      # savdo cheki emas
         self.assertNotIn("Qaytim", text)
+
+
+class LetterBarcodeTest(unittest.TestCase):
+    """2026-09-30: Code128 kod «HT00026010093» kassada topilmadi. Skaner
+    harflarni klaviatura tugmasi sifatida yozadi — Windows tili ruscha
+    bo'lsa H→«Р», T→«Е». Monoblokda klaviatura yo'q, kassir tilni
+    almashtira olmaydi — kassa o'zi tanishi kerak."""
+
+    CODE = "HT00026010093"
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.dir.name) / "kassa.db")
+        self.store.replace_products([
+            {"id": 30, "ms_id": "ms-30", "name": "Krem HT", "code": "S30",
+             "barcode": self.CODE, "barcodes": [self.CODE],
+             "price": 45_000_00, "is_weight": False, "plu": None, "tracked": False, "stock": 3},
+            {"id": 31, "ms_id": "ms-31", "name": "Buhanka", "code": "0001",
+             "barcode": "4780001000017", "barcodes": ["4780001000017"],
+             "price": 3_000_00, "is_weight": False, "plu": None, "tracked": False, "stock": 9},
+        ])
+        self.backend = LiveBackend(FakeHub(), self.store, METHODS)
+
+    def tearDown(self):
+        self.store.close()
+        self.dir.cleanup()
+
+    def test_aniq_kod(self):
+        product, qty = self.backend.find_by_barcode(self.CODE)
+        self.assertEqual((product.name, qty), ("Krem HT", Decimal(1)))
+
+    def test_ruscha_klaviatura(self):
+        # Skaner ruscha tartibda yozgani: kirill Р (U+0420) va Е (U+0415)
+        scanned = "РЕ" + "00026010093"
+        self.assertNotEqual(scanned, self.CODE)
+        product, qty = self.backend.find_by_barcode(scanned)
+        self.assertEqual((product.name, qty), ("Krem HT", Decimal(1)))
+
+    def test_caps_lock(self):
+        for scanned in ("ht00026010093", "ре" + "00026010093"):   # lotin / kirill kichik
+            product, _ = self.backend.find_by_barcode(scanned)
+            self.assertEqual(product.name, "Krem HT", scanned)
+
+    def test_ozbek_kirill_harflari(self):
+        from pos.barcode import keyboard_to_latin
+        self.assertEqual(keyboard_to_latin("ЎҚ"), "OS")        # Ў Қ
+        self.assertEqual(keyboard_to_latin("ЙЦУ"), "QWE")  # Й Ц У
+
+    def test_raqamli_kodlar_ozgarmaydi(self):
+        from pos.barcode import keyboard_to_latin
+        self.assertEqual(keyboard_to_latin("4780001000017"), "4780001000017")
+        product, _ = self.backend.find_by_barcode("4780001000017")
+        self.assertEqual(product.name, "Buhanka")
+
+    def test_notogri_kod_topilmaydi(self):
+        self.assertIsNone(self.backend.find_by_barcode("РЕ" + "00026010094"))
+        self.assertIsNone(self.backend.find_by_barcode("XX00026010093"))
