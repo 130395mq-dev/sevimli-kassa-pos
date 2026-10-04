@@ -1,9 +1,10 @@
 """
 Hub bilan aloqa.
 
-Qoida: **chek avval diskka, keyin serverga.** Kassir server javobini
-kutmaydi: fon navbatni yuboradi. Dastlabki qog'oz chekda lokal belgi,
-yetkazilgandan keyingi nusxada server yoki MoySklad raqami chiqadi.
+Qoida: **chek avval diskka, keyin serverga.** Qog'oz chekda MoySklad
+raqami chiqishi uchun kassa server javobini QISQA muddat (`number_wait`,
+5 soniya) kutadi; javob kelmasa chek vaqtinchalik belgi bilan chiqadi va
+kassir kutib qolmaydi — fon navbatni yuboradi (egasining qarori, 2026-10-04).
 
 Takroriy yuborish xavfsiz: har chekning `local_uuid` si bor va server
 o'sha kalit bo'yicha takrorni rad etadi.
@@ -15,6 +16,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -465,6 +467,17 @@ class LiveBackend:
         #: Narx turlari [{id, name}], asosiysi va joriysi
         self.price_types: list[dict] = []
         self.default_price_type: str = ""
+        #: Shu vaqtgacha (time.monotonic) chek raqami kutilmaydi — aloqa
+        #: yo'qligida har chek `number_wait` soniyaga ushlanib qolmasin.
+        self._number_skip_until = 0.0
+
+    #: Qog'oz chekda MoySklad raqami chiqishi uchun server javobini necha
+    #: soniya kutamiz. 0 — kutilmaydi (fon oqimi va testlar). Kassa oynasi
+    #: uchun main.py da yoqiladi.
+    number_wait: float = 0.0
+    #: Kutish natija bermasa (aloqa yo'q / server sekin) — shuncha soniya
+    #: keyingi cheklar kutmasdan, vaqtinchalik belgi bilan chiqadi.
+    NUMBER_BACKOFF = 60.0
 
     # --------------------------------------------------------- narx turi
 
@@ -617,19 +630,64 @@ class LiveBackend:
         self.store.queue(local_uuid, payload, created_at)
         from .history import receipt_label
         self.last_receipt_number = receipt_label(payload)
-        # UI emits sale_finished to wake the existing background flush.
-        # Do not do network I/O here: even an online server can hang.
+        # Chek diskda. Endi raqamni QISQA kutamiz; kelmasa fon yuboradi
+        # (UI sale_finished bilan flush'ni uyg'otadi). Server osilib qolsa
+        # ham kassir `number_wait` dan ortiq kutmaydi.
+        if self.number_wait > 0:
+            official = self._wait_number(local_uuid, payload)
+            self.last_receipt_number = official or f"Vaqtincha {local_uuid[:8].upper()}"
+
+    def _wait_number(self, local_uuid: str, payload: dict) -> str | None:
+        """Chekni alohida oqimda yuboradi va MoySklad raqamini `number_wait`
+        soniyagacha kutadi. Raqam kelmasa None — chek navbatda/yo'lda qoladi.
+
+        Kutish tugagach ham oqim so'rovni oxirigacha yetkazadi (chek
+        `_INFLIGHT` da — fon `flush` uni ikkinchi marta yubormaydi); kech
+        kelgan raqam tarixga yoziladi, lekin KEYINGI chekka o'tib qolmaydi.
+        """
+        if time.monotonic() < self._number_skip_until:
+            return None
+        box: dict = {}
+
+        def work() -> None:
+            box["number"], box["outage"] = self._deliver(local_uuid, payload)
+
+        # Belgi oqimdan OLDIN qo'yiladi: aks holda fon flush shu chekni
+        # oqim boshlanguncha yuborib qo'yishi mumkin edi.
+        with _INFLIGHT_LOCK:
+            _INFLIGHT.add(local_uuid)
+        try:
+            worker = threading.Thread(target=work, name="chek-raqami", daemon=True)
+            worker.start()
+        except RuntimeError:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.discard(local_uuid)
+            return None
+        worker.join(self.number_wait)
+        number = box.get("number")
+        if not number and box.get("outage", True):
+            # Javob kelmadi yoki aloqa yo'q — bir muddat kutmasdan ishlaymiz.
+            self._number_skip_until = time.monotonic() + self.NUMBER_BACKOFF
+        return number
 
     def _send_now(self, local_uuid: str, payload: dict) -> None:
-        """Navbatga yozilgan chekni shu zahoti serverga yuboradi.
+        """Navbatga yozilgan chekni shu zahoti serverga yuboradi (kutib)."""
+        official, _ = self._deliver(local_uuid, payload)
+        if official:
+            self.last_receipt_number = official
+
+    def _deliver(self, local_uuid: str, payload: dict) -> tuple[str | None, bool]:
+        """Chekni serverga yuboradi. Qaytaradi: (MoySklad raqami yoki None,
+        aloqa uzilganmi).
 
         Onlayn bo'lsa Отгрузка darhol yaratiladi va MoySklad bergan haqiqiy
-        raqam qog'oz chekda chiqadi. So'rov yo'lda uzilsa chek lokal
-        navbatda qoladi; local_uuid tufayli qayta yuborish xavfsiz.
+        raqam qaytadi. So'rov yo'lda uzilsa chek lokal navbatda qoladi;
+        local_uuid tufayli qayta yuborish xavfsiz.
 
         Yuborish davomida chek `_INFLIGHT` da turadi — fon `flush` uni
         ikkinchi marta yubormaydi.
         """
+        official = None
         with _INFLIGHT_LOCK:
             _INFLIGHT.add(local_uuid)
         try:
@@ -637,21 +695,20 @@ class LiveBackend:
                 resp = self.hub.send_sale(payload)
             except (HubConnError, HubAuthError) as e:
                 self.store.note_outage(local_uuid, str(e))
-                return
+                return None, True
             except HubError as e:
                 self.store.mark_failed(local_uuid, str(e))
-                return
+                return None, False
             except Exception as e:
                 # Buzuq/kutilmagan javobda ham diskka yozilgan chek yo'qolmaydi
                 # va kassir uni ikkinchi marta urib yubormaydi.
                 self.store.note_outage(local_uuid, str(e))
-                return
+                return None, True
 
             check_no = resp.get("id") if isinstance(resp, dict) else None
             official = resp.get("receipt_number") if isinstance(resp, dict) else None
-            if official:
-                self.last_receipt_number = official
             self.store.mark_sent(local_uuid, check_no, official)
+            return (str(official) if official else None), False
         except sqlite3.Error:
             # queue() has already committed this UUID. Failure to record an
             # acknowledgement/outage must not tell the cashier "Saqlanmadi"
@@ -659,6 +716,7 @@ class LiveBackend:
             # outbox row for the normal idempotent retry after disk recovery.
             # Do not try another database write while storage is failing.
             logger.exception("Chek %s saqlangan; yuborish holati lokal bazaga yozilmadi", local_uuid)
+            return (str(official) if official else None), False
         finally:
             with _INFLIGHT_LOCK:
                 _INFLIGHT.discard(local_uuid)
