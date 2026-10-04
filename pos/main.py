@@ -240,6 +240,9 @@ def main() -> int:
         logger.info("Smena ochiq (%s) — kirish ekranida PIN so'raladi", shift.get("cashier"))
 
     backend = LiveBackend(hub, store, info["payment_methods"])
+    # Qog'oz chekda MoySklad raqami chiqsin: server javobi 5 soniyagacha
+    # kutiladi, kelmasa chek vaqtinchalik belgi bilan chiqadi (2026-10-04).
+    backend.number_wait = 5.0
     backend.setup_price_types(
         info.get("price_types") or [], info.get("default_price_type") or ""
     )

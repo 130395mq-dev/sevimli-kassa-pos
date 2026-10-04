@@ -540,3 +540,163 @@ class BackendNameCollisionTest(unittest.TestCase):
             store.close()
         finally:
             tmp.cleanup()
+
+
+# ------------------------------------- qog'oz chekdagi raqam (2026-10-04)
+
+class ReceiptNumberWaitTest(unittest.TestCase):
+    """Egasining qarori (2026-10-04): qog'oz chekda MoySklad raqami chiqsin.
+
+    1.18.8–1.18.9 da kassa server javobini umuman kutmasdi va har chekda
+    raqam o'rniga «Yuborilmagan XXXXXXXX» chiqardi. Endi kassa oynasi
+    raqamni QISQA muddat kutadi; kelmasa chek «Vaqtincha XXXXXXXX» belgisi
+    bilan chiqadi va kassir kutib qolmaydi. Chek har holda diskda turadi.
+    """
+
+    PRODUCTS = [{"id": 1, "ms_id": "ms-1", "name": "Buhanka", "code": "0001",
+                 "barcode": "4780001000017", "price": 3_000_00, "is_weight": False,
+                 "plu": None, "tracked": False, "stock": 12}]
+
+    def setUp(self):
+        import threading
+        from pos import hub as hubmod
+        self.hubmod = hubmod
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name) / "kassa.db")
+        self.store.replace_products(self.PRODUCTS)
+        self.release = threading.Event()
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        import time
+        self.release.set()
+        for _ in range(100):                     # kutilayotgan oqimlar tugasin
+            if not self.hubmod._INFLIGHT:
+                break
+            time.sleep(0.02)
+        self.store.close()
+        self.tmp.cleanup()
+
+    def _backend(self, hub, wait=0.3):
+        backend = LiveBackend(hub, self.store, [{"code": "naqd", "name": "Naqd", "is_cash": True}])
+        backend.number_wait = wait
+        return backend
+
+    def _sell(self, backend):
+        from pos.cart import Cart, PaymentPlan
+        cart = Cart()
+        cart.add(self.store.by_barcode("4780001000017"), 1)
+        plan = PaymentPlan(cart.total)
+        plan.add_cash(cart.total)
+        backend.submit(cart, plan)
+        return backend.last_receipt_number
+
+    def _settle(self):
+        import time
+        for _ in range(200):
+            if not self.hubmod._INFLIGHT:
+                return
+            time.sleep(0.02)
+        self.fail("yuborish oqimi tugamadi")
+
+    class Hub:
+        """Server: `delay` soniya o'ylaydi yoki `release` ni kutadi."""
+
+        def __init__(self, release=None, fail=None):
+            self.release = release
+            self.fail = fail
+            self.calls = []
+
+        def send_sale(self, payload):
+            self.calls.append(payload["local_uuid"])
+            if self.release is not None:
+                self.release.wait(10)
+            if self.fail:
+                raise self.fail
+            n = len(self.calls)
+            return {"id": n, "number": n, "receipt_number": f"OT-{n:04d}"}
+
+    def test_server_javob_bersa_chekda_haqiqiy_raqam(self):
+        hub = self.Hub()
+        backend = self._backend(hub)
+        self.assertEqual(self._sell(backend), "OT-0001")
+        self.assertEqual(self.store.pending_count(), 0)          # yuborilgan
+        self.assertEqual(backend.flush(), 0)                     # fon qayta yubormaydi
+        self.assertEqual(len(hub.calls), 1)
+        self.assertNotIn("Yuborilmagan", backend.last_receipt_number)
+
+    def test_server_sekin_bolsa_kassir_kutib_qolmaydi(self):
+        import time
+        hub = self.Hub(release=self.release)                     # server «osilib» qolgan
+        backend = self._backend(hub, wait=0.2)
+        t0 = time.monotonic()
+        number = self._sell(backend)
+        self.assertLess(time.monotonic() - t0, 1.5)              # 0.2 s + zaxira
+        uid = hub.calls[0]
+        self.assertEqual(number, f"Vaqtincha {uid[:8].upper()}")
+        self.assertNotIn("Yuborilmagan", number)
+        number.encode("cp866")                                   # printer buzmaydi
+        self.assertEqual(self.store.unsent_count(), 1)           # chek diskda
+        # So'rov hali yo'lda — fon flush shu chekni ikkinchi marta yubormaydi
+        self.assertEqual(backend.flush(), 0)
+        self.assertEqual(hub.calls, [uid])
+        # Server oxiri javob berdi: chek yuborilgan deb belgilanadi, raqam tarixda
+        self.release.set()
+        self._settle()
+        self.assertEqual(self.store.unsent_count(), 0)
+        row = self.store.db.execute("SELECT payload, sent FROM outbox WHERE local_uuid=?", (uid,)).fetchone()
+        self.assertEqual(row["sent"], 1)
+        self.assertEqual(json.loads(row["payload"])["receipt_number"], "OT-0001")
+        self.assertEqual(hub.calls, [uid])                       # bir marta ketgan
+
+    def test_kech_kelgan_raqam_keyingi_chekka_otib_qolmaydi(self):
+        hub = self.Hub(release=self.release)
+        backend = self._backend(hub, wait=0.2)
+        first = self._sell(backend)
+        second = self._sell(backend)                             # kutmasdan (pauza)
+        self.assertNotEqual(first, second)
+        self.assertTrue(second.startswith("Vaqtincha "))
+        self.release.set()                                       # 1-chek raqami endi keldi
+        self._settle()
+        self.assertEqual(backend.last_receipt_number, second)    # 2-chek belgisi o'zgarmagan
+
+    def test_aloqa_yoq_bolsa_faqat_birinchi_chek_urinadi(self):
+        import time
+        hub = self.Hub(fail=HubConnError("internet yo'q"))
+        backend = self._backend(hub)
+        self.assertTrue(self._sell(backend).startswith("Vaqtincha "))
+        self.assertEqual(len(hub.calls), 1)
+        t0 = time.monotonic()
+        self.assertTrue(self._sell(backend).startswith("Vaqtincha "))
+        self.assertLess(time.monotonic() - t0, 0.25)             # kutilmadi
+        self.assertEqual(len(hub.calls), 1)                      # serverga urinilmadi
+        self.assertEqual(self.store.pending_count(), 2)          # ikkalasi navbatda
+        self.assertEqual(self.store.stuck_count(), 0)
+        # Pauza o'tgach va aloqa tiklangach — yana haqiqiy raqam
+        backend._number_skip_until = 0.0
+        hub.fail = None
+        self.assertEqual(self._sell(backend), "OT-0002")
+        self.assertEqual(backend.flush(), 2)                     # eski ikkitasi ham ketdi
+        self.assertEqual(self.store.unsent_count(), 0)
+
+    def test_server_rad_etsa_pauza_yoq_chek_korinib_turadi(self):
+        hub = self.Hub(fail=HubError("Server rad etdi: narx noto'g'ri"))
+        backend = self._backend(hub)
+        self.assertTrue(self._sell(backend).startswith("Vaqtincha "))
+        self.assertEqual(self.store.unsent_count(), 1)           # yo'qolmagan
+        hub.fail = None
+        self.assertEqual(self._sell(backend), "OT-0002")         # keyingi chek kutadi va raqam oladi
+
+    def test_kutish_ochirilgan_bolsa_tarmoqqa_chiqilmaydi(self):
+        hub = self.Hub()
+        backend = self._backend(hub, wait=0)                     # fon oqimi va eski xulq
+        number = self._sell(backend)
+        self.assertEqual(hub.calls, [])
+        self.assertTrue(number.startswith("Yuborilmagan "))
+        self.assertEqual(backend.flush(), 1)
+
+    def test_kassa_oynasida_kutish_yoqilgan(self):
+        source = (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+        self.assertIn("backend.number_wait = 5.0", source)
+        self.assertEqual(LiveBackend.number_wait, 0.0)           # fon nusxasi kutmaydi
+        self.assertEqual(source.count("number_wait"), 1)
