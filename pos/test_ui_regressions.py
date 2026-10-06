@@ -247,3 +247,83 @@ class SessionEventsTest(unittest.TestCase):
         events.renewed.emit("old-renewal", "previous-login")
         events.lost.emit("old-error", "previous-login")
         self.assertEqual((renewed, lost), ([], []))
+
+
+class WeightCommaTest(unittest.TestCase):
+    """Vaznli tovar miqdori: vergul bilan kiloda terish (2026-10-06)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
+    def dialog(self, weight=True):
+        from decimal import Decimal
+        from types import SimpleNamespace
+        from .ui.dialogs import QuantityDialog
+        product = SimpleNamespace(name="kolbasa", price=5999000, is_weight=weight)
+        return QuantityDialog(SimpleNamespace(product=product, quantity=Decimal("1")))
+
+    def type(self, d, keys):
+        for k in keys:
+            if k == ",":
+                d.on_comma()
+            elif k == "<":
+                d.on_backspace()
+            else:
+                d.on_digit(k)
+        return d.quantity
+
+    def test_vergulsiz_gramm_avvalgidek(self):
+        from decimal import Decimal
+        self.assertEqual(self.type(self.dialog(), "734"), Decimal("0.734"))
+        self.assertEqual(self.type(self.dialog(), "1500"), Decimal("1.5"))
+
+    def test_vergul_bilan_kilo(self):
+        from decimal import Decimal
+        d = self.dialog()
+        self.assertEqual(self.type(d, "1,5"), Decimal("1.5"))
+        self.assertEqual(d.display.text(), "1.500 kg")
+        self.assertEqual(self.type(self.dialog(), "0,734"), Decimal("0.734"))
+        self.assertEqual(self.type(self.dialog(), ",25"), Decimal("0.25"))      # boshida vergul = 0,
+        self.assertEqual(self.type(self.dialog(), "12,"), Decimal("12"))        # 12 kg
+        self.assertEqual(self.type(self.dialog(), "2,050"), Decimal("2.05"))
+
+    def test_grammdan_mayda_va_ikkinchi_vergul_etiborsiz(self):
+        from decimal import Decimal
+        self.assertEqual(self.type(self.dialog(), "1,2345"), Decimal("1.234"))   # 4-xona olinmaydi
+        self.assertEqual(self.type(self.dialog(), "1,,5"), Decimal("1.5"))
+        self.assertEqual(self.type(self.dialog(), "1,5,7"), Decimal("1.57"))
+
+    def test_nol_va_bosh_qiymat_saqlanmaydi(self):
+        for keys in ("", ",", "0,", "0,000", "0"):
+            self.assertIsNone(self.type(self.dialog(), keys), keys)
+
+    def test_ochirish_vergulni_ham_ochiradi(self):
+        from decimal import Decimal
+        d = self.dialog()
+        self.assertEqual(self.type(d, "1,5<<"), Decimal("0.001"))                # yana gramm: 1
+        self.assertEqual(self.type(d, "50"), Decimal("0.15"))                    # 150 g
+
+    def test_katta_gramm_sonidan_keyin_vergul_etiborsiz(self):
+        from decimal import Decimal
+        self.assertEqual(self.type(self.dialog(), "1500,5"), Decimal("15.005"))  # 15005 g — vergul olinmadi
+
+    def test_donali_tovarda_vergul_yoq(self):
+        from decimal import Decimal
+        from .ui.keypad import Keypad
+        d = self.dialog(weight=False)
+        self.assertEqual(self.type(d, "3,5"), Decimal("35"))                     # vergul e'tiborsiz
+        pads = d.findChildren(Keypad)
+        self.assertEqual(len(pads), 1)
+        from PySide6.QtWidgets import QPushButton
+        texts = [b.text() for b in pads[0].findChildren(QPushButton)]
+        self.assertNotIn(",", texts)
+        vaznli = self.dialog()                                                   # oyna tirik tursin
+        wpad = vaznli.findChildren(Keypad)[0]
+        self.assertIn(",", [b.text() for b in wpad.findChildren(QPushButton)])
+
+    def test_oyna_kassa_ekraniga_sigadi(self):
+        d = self.dialog()
+        d.adjustSize()
+        self.assertLessEqual(d.sizeHint().height(), 700)                         # 1366x768 da ~720 px joy
