@@ -50,6 +50,22 @@ class Product:
                 return int(v)
         return self.price
 
+    @property
+    def can_weigh(self) -> bool:
+        """Kilolab sotilishi mumkin bo'lgan tovar — miqdorida kasr bo'ladi.
+
+        Sevimli MoySklad'ida hamma birlik «шт», shuning uchun `is_weight`
+        kilo tovarda ham yoqilmagan. Tarozi tovari boshqa belgidan
+        taniladi: kodi faqat raqam (00843) yoki tarozi PLU'si bor —
+        tarozi yorlig'i skanerlanganda ham aynan shu qoida ishlaydi
+        (hub.find_by_barcode).
+        """
+        return bool(
+            self.is_weight
+            or self.plu is not None
+            or (self.code or "").strip().isdigit()
+        )
+
 
 @dataclass
 class Customer:
@@ -136,6 +152,12 @@ class Cart:
 
         if not product.is_weight:
             for i, line in enumerate(self.lines):
+                if Decimal(line.quantity) % 1 != 0:
+                    # Qo'lda kiloda terilgan qator (1,250) — bu alohida
+                    # tortish. Ustiga qo'shilsa 2,250 bo'lib qoladi va
+                    # kassir uni yangi vazn bilan almashtirib, birinchi
+                    # tortishni yo'qotadi. Yangi qator ochiladi.
+                    continue
                 if line.product.id == product.id and not line.mark_code:
                     line.quantity += quantity
                     # Oxirgi urilgan tovar ro'yxat oxiriga (ekranда tepaga)
