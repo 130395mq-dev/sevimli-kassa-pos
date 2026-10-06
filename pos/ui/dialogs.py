@@ -544,6 +544,14 @@ class NewCustomerDialog(BaseDialog):
 # --------------------------------------------------------- miqdor, chegirma
 
 
+def _can_weigh(product) -> bool:
+    """Tovar kilolab sotilishi mumkinmi (cart.Product.can_weigh).
+
+    Xususiyati yo'q obyekt (eski chaqiruvchi) — donali deb olinadi.
+    """
+    return bool(getattr(product, "can_weigh", False))
+
+
 class QuantityDialog(BaseDialog):
     """Miqdor. Vaznli tovarda kilogramm, oddiy tovarda dona.
 
@@ -551,6 +559,14 @@ class QuantityDialog(BaseDialog):
     «kilosini qo'lda yozganda vergul qo'yish kerak»):
       * vergulsiz — GRAMM: 734 = 0.734 kg (avvalgidek);
       * vergul bilan — KILO: 1,5 = 1.500 kg.
+
+    Kilo tovar qo'lda (ro'yxatdan bosib) qo'shilganda u «vaznli» deb
+    belgilanmagan bo'ladi: MoySklad'da hamma birlik «шт», belgi faqat
+    tarozi yorlig'i skanerlanganda qo'yiladi. Bunday tovarda (kodi
+    raqamli yoki PLU'si bor — `Product.can_weigh`) ham vergul chiqadi:
+      * vergulsiz — avvalgidek butun son: 2 = 2;
+      * vergul bilan — KILO: 1,5 = 1.5.
+    Donali tovarda (kodi S...) vergul yo'q — yarimta shisha sotilmaydi.
     """
 
     #: Kassir «O'chirish» ni bosgan bo'lsa — qator o'chiriladi
@@ -560,6 +576,8 @@ class QuantityDialog(BaseDialog):
         super().__init__(tr("Miqdor"), width=480, parent=parent)
         self.line = line
         self.is_weight = line.product.is_weight
+        #: Vergul tugmasi bormi: vaznli yoki kilolab sotiladigan tovar
+        self.allow_comma = self.is_weight or _can_weigh(line.product)
         self.typed = ""
         self.deleted = False
         self._allow_delete = allow_delete
@@ -587,8 +605,10 @@ class QuantityDialog(BaseDialog):
                 btn.clicked.connect(lambda _=False, v=n: self.set_value(v))
                 row.addWidget(btn)
             self.root.addLayout(row)
+            # Bu yerga izoh qatori qo'shilmaydi: oyna 1366x768 ekranga
+            # zo'rg'a sig'adi, vergul tugmasining o'zi yetarli.
 
-        pad = Keypad(with_zeros=not self.is_weight, with_comma=self.is_weight)
+        pad = Keypad(with_zeros=not self.is_weight, with_comma=self.allow_comma)
         pad.digit.connect(self.on_digit)
         pad.comma.connect(self.on_comma)
         pad.backspace.connect(self.on_backspace)
@@ -626,7 +646,7 @@ class QuantityDialog(BaseDialog):
 
     def on_comma(self) -> None:
         """Vergul: terilgan son GRAMM emas, KILO bo'ladi (1,5 = 1.500 kg)."""
-        if not self.is_weight or "," in self.typed:
+        if not self.allow_comma or "," in self.typed:
             return
         whole = self.typed.lstrip("0")
         if len(whole) > 3:
@@ -647,14 +667,14 @@ class QuantityDialog(BaseDialog):
         value = self.quantity
         if value is None:
             self.display.setText("—")
-        elif self.is_weight:
+        elif self.is_weight or "," in self.typed:
             self.display.setText(f"{value:.3f} kg")
         else:
             self.display.setText(str(int(value)))
 
     @property
     def quantity(self) -> Decimal | None:
-        if self.is_weight and "," in self.typed:
+        if self.allow_comma and "," in self.typed:
             whole, _, frac = self.typed.partition(",")
             if not whole.isdigit() or (frac and not frac.isdigit()):
                 return None
