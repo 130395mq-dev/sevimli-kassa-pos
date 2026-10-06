@@ -327,3 +327,141 @@ class WeightCommaTest(unittest.TestCase):
         d = self.dialog()
         d.adjustSize()
         self.assertLessEqual(d.sizeHint().height(), 700)                         # 1366x768 da ~720 px joy
+
+
+class ManualKiloCommaTest(unittest.TestCase):
+    """Kilo tovar QO'LDA qo'shilganda ham vergul chiqadi (2026-10-06).
+
+    1.18.11 da vergul faqat «vaznli» belgili tovarda bor edi. Sevimli
+    MoySklad'ida hamma birlik «шт» — ro'yxatdan bosib qo'shilgan kilo
+    tovar donali bo'lib tushadi va kassir vergulni ko'rmasdi.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
+    KILO = dict(id=11, ms_id="ms-11", name="Uzum", price=13_990_00, code="00420")
+    DONA = dict(id=12, ms_id="ms-12", name="Cola 1L", price=12_000_00, code="S00123")
+
+    def product(self, **over):
+        from .cart import Product
+        return Product(**{**self.KILO, **over})
+
+    def dialog(self, product, quantity="1"):
+        from decimal import Decimal
+        from .cart import Line
+        from .ui.dialogs import QuantityDialog
+        return QuantityDialog(Line(product=product, quantity=Decimal(quantity)))
+
+    def type(self, d, keys):
+        for k in keys:
+            d.on_comma() if k == "," else d.on_digit(k)
+        return d.quantity
+
+    def keys(self, d):
+        from PySide6.QtWidgets import QPushButton
+        from .ui.keypad import Keypad
+        pad, = d.findChildren(Keypad)
+        return [b.text() for b in pad.findChildren(QPushButton)]
+
+    def test_kilo_tovar_belgisi(self):
+        from .cart import Product
+        self.assertTrue(self.product().can_weigh)                                # kodi raqam
+        self.assertTrue(self.product(code="S1", plu=77).can_weigh)               # tarozi PLU'si bor
+        self.assertTrue(self.product(code="", is_weight=True).can_weigh)
+        self.assertFalse(Product(**self.DONA).can_weigh)
+        self.assertFalse(self.product(code="").can_weigh)
+        self.assertFalse(self.product(code="00420A").can_weigh)
+
+    def test_qolda_qoshilgan_kilo_tovarda_vergul_bor(self):
+        from decimal import Decimal
+        d = self.dialog(self.product())
+        self.assertFalse(d.is_weight)                                            # katalogda vaznli emas
+        self.assertIn(",", self.keys(d))
+        self.assertEqual(self.type(d, "1,25"), Decimal("1.25"))
+        self.assertEqual(d.display.text(), "1.250 kg")
+        self.assertEqual(self.type(self.dialog(self.product()), ",5"), Decimal("0.5"))
+        self.assertEqual(self.type(self.dialog(self.product()), "0,734"), Decimal("0.734"))
+
+    def test_vergulsiz_butun_son_avvalgidek(self):
+        """Vergulsiz son GRAMMGA aylanmaydi: 2 = 2 (avvalgi xatti-harakat)."""
+        from decimal import Decimal
+        d = self.dialog(self.product())
+        self.assertEqual(self.type(d, "2"), Decimal("2"))
+        self.assertEqual(d.display.text(), "2")
+        self.assertEqual(self.type(self.dialog(self.product()), "10"), Decimal("10"))
+        self.assertIn("000", self.keys(d))                                       # donali klaviatura joyida
+        d.set_value(5)
+        self.assertEqual(d.quantity, Decimal("5"))
+
+    def test_donali_tovarda_vergul_yoq(self):
+        from decimal import Decimal
+        from .cart import Product
+        d = self.dialog(Product(**self.DONA))
+        self.assertNotIn(",", self.keys(d))
+        self.assertEqual(self.type(d, "3,5"), Decimal("35"))                     # vergul e'tiborsiz
+
+    def test_oyna_donali_oynadan_baland_emas(self):
+        """Vergul tugmasi oynani o'stirmaydi — 1366x768 ekranga sig'ishi kerak."""
+        from .cart import Product
+        kilo = self.dialog(self.product())
+        dona = self.dialog(Product(**self.DONA))
+        kilo.adjustSize()
+        dona.adjustSize()
+        self.assertEqual(kilo.sizeHint().height(), dona.sizeHint().height())
+
+    def test_kasr_qatorga_yangi_bosish_qoshilmaydi(self):
+        """1,250 kg qatoridan keyin tovar yana bosilsa — yangi qator.
+
+        Aks holda 2,250 bo'lib, kassir uni ikkinchi vazn bilan
+        almashtiradi va birinchi tortish chekdan yo'qoladi."""
+        from decimal import Decimal
+        cart = Cart()
+        p = self.product()
+        cart.add(p)
+        cart.set_quantity(0, Decimal("1.25"))
+        cart.add(p)
+        self.assertEqual([l.quantity for l in cart.lines], [Decimal("1.25"), Decimal("1")])
+        cart.set_quantity(1, Decimal("0.8"))
+        self.assertEqual(cart.gross_total, 1_748_750 + 1_119_200)                # 17 487,50 + 11 192
+
+    def test_butun_miqdor_avvalgidek_birlashadi(self):
+        from decimal import Decimal
+        from .cart import Product
+        cart = Cart()
+        cart.add(self.product())
+        cart.add(self.product())
+        cart.add(Product(**self.DONA))
+        cart.add(Product(**self.DONA))
+        self.assertEqual([l.quantity for l in cart.lines], [Decimal("2"), Decimal("2")])
+
+    def test_kassada_boshidan_oxirigacha(self):
+        """Ro'yxatdan bosildi → qator bosildi → 1,25 terildi → serverga 1.25."""
+        from decimal import Decimal
+        from .hub import sale_payload
+        from .ui.dialogs import QuantityDialog
+        from .ui.main_window import MainWindow
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(Path(folder) / "kassa.db")
+            store.replace_products(PRODUCTS + [{
+                "id": 11, "ms_id": "ms-11", "name": "Uzum", "code": "00420",
+                "barcode": "", "price": 13_990_00, "is_weight": False,
+                "plu": None, "tracked": False, "stock": 50,
+            }])
+            backend = LiveBackend(FakeHub(), store, METHODS)
+            window = MainWindow(backend)
+            product, = [p for p in backend.search("Uzum") if p.id == 11]
+            self.assertTrue(window._add_to_cart(product))
+            d = QuantityDialog(window.cart.lines[0], window)
+            self.assertEqual(self.type(d, "1,25"), Decimal("1.25"))
+            window.cart.set_quantity(0, d.quantity)
+            window.refresh()
+            self.assertEqual(window.cart.total, 1_748_750)
+            plan = PaymentPlan(total=window.cart.total)
+            plan.add_cash(window.cart.total)
+            payload = sale_payload(window.cart, plan, "u-1", "2026-10-06T10:00:00+05:00")
+            self.assertEqual(payload["items"][0]["quantity"], "1.25")
+            self.assertEqual(payload["items"][0]["total"], 1_748_750)
+            store.close()
