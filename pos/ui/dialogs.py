@@ -545,7 +545,13 @@ class NewCustomerDialog(BaseDialog):
 
 
 class QuantityDialog(BaseDialog):
-    """Miqdor. Vaznli tovarda kilogramm, oddiy tovarda dona."""
+    """Miqdor. Vaznli tovarda kilogramm, oddiy tovarda dona.
+
+    Vaznli tovarda ikki xil terish mumkin (egasining so'rovi, 2026-10-06:
+    «kilosini qo'lda yozganda vergul qo'yish kerak»):
+      * vergulsiz — GRAMM: 734 = 0.734 kg (avvalgidek);
+      * vergul bilan — KILO: 1,5 = 1.500 kg.
+    """
 
     #: Kassir «O'chirish» ni bosgan bo'lsa — qator o'chiriladi
     deleted: bool = False
@@ -568,7 +574,9 @@ class QuantityDialog(BaseDialog):
         self.root.addWidget(self.display)
 
         if self.is_weight:
-            note = _label("Grammda kiriting: 734 = 0.734 kg", 13, t.MUTED)
+            note = _label(
+                "Gramm: 734 = 0.734 kg   ·   Kilo: 1,5 = 1.5 kg", 13, t.MUTED
+            )
             note.setAlignment(Qt.AlignCenter)
             self.root.addWidget(note)
         else:
@@ -580,8 +588,9 @@ class QuantityDialog(BaseDialog):
                 row.addWidget(btn)
             self.root.addLayout(row)
 
-        pad = Keypad(with_zeros=not self.is_weight)
+        pad = Keypad(with_zeros=not self.is_weight, with_comma=self.is_weight)
         pad.digit.connect(self.on_digit)
+        pad.comma.connect(self.on_comma)
         pad.backspace.connect(self.on_backspace)
         pad.clear.connect(self.on_clear)
         self.root.addWidget(pad)
@@ -607,8 +616,23 @@ class QuantityDialog(BaseDialog):
         self.refresh()
 
     def on_digit(self, value: str) -> None:
-        if len(self.typed) + len(value) <= 7:
+        if "," in self.typed:
+            # Kiloda: verguldan keyin grammgacha (3 xona), ortig'i e'tiborsiz
+            if len(self.typed.partition(",")[2]) + len(value) <= 3:
+                self.typed += value
+        elif len(self.typed) + len(value) <= 7:
             self.typed = (self.typed + value).lstrip("0") or "0"
+        self.refresh()
+
+    def on_comma(self) -> None:
+        """Vergul: terilgan son GRAMM emas, KILO bo'ladi (1,5 = 1.500 kg)."""
+        if not self.is_weight or "," in self.typed:
+            return
+        whole = self.typed.lstrip("0")
+        if len(whole) > 3:
+            # 999 kg dan katta bo'lmaydi — bu gramm terilgan, vergul e'tiborsiz
+            return
+        self.typed = (whole or "0") + ","
         self.refresh()
 
     def on_backspace(self) -> None:
@@ -630,6 +654,12 @@ class QuantityDialog(BaseDialog):
 
     @property
     def quantity(self) -> Decimal | None:
+        if self.is_weight and "," in self.typed:
+            whole, _, frac = self.typed.partition(",")
+            if not whole.isdigit() or (frac and not frac.isdigit()):
+                return None
+            value = Decimal(f"{whole}.{frac or '0'}")
+            return value if value > 0 else None
         if not self.typed.isdigit():
             return None
         try:
