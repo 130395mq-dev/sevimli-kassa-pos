@@ -465,3 +465,129 @@ class ManualKiloCommaTest(unittest.TestCase):
             self.assertEqual(payload["items"][0]["quantity"], "1.25")
             self.assertEqual(payload["items"][0]["total"], 1_748_750)
             store.close()
+
+
+class ScanFocusTest(unittest.TestCase):
+    """Skaner kodi doim shtrix-kod maydoniga tushsin (egasi, 2026-10-08).
+
+    Kartani yoki chek qatorini bosgandan keyin fokus ro'yxatga o'tib
+    qolardi: keyingi skaner kodi yo'qolar, kassir maydonni qo'l bilan
+    bosishi kerak edi.
+    """
+
+    BARCODE = "4780001000017"                                                    # Buhanka S
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        from .ui.main_window import MainWindow
+        self.folder = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.folder.name) / "kassa.db")
+        self.store.replace_products(PRODUCTS)
+        self.backend = LiveBackend(FakeHub(), self.store, METHODS)
+        self.window = MainWindow(self.backend)
+        self.window.resize(1024, 768)
+        self.window.show()
+        self.window.activateWindow()
+        self.settle()
+
+    def tearDown(self):
+        self.window.close()
+        self.window.deleteLater()
+        self.settle()
+        self.store.close()
+        self.folder.cleanup()
+
+    def settle(self, ms=0):
+        from PySide6.QtTest import QTest
+        QTest.qWait(ms)
+        for _ in range(5):
+            self.app.processEvents()
+
+    def focused(self):
+        return self.app.focusWidget()
+
+    def scan(self, code=None):
+        """Skaner: raqamlar + Enter — fokusdagi joyga yoziladi."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        target = self.focused() or self.window
+        QTest.keyClicks(target, code or self.BARCODE)
+        QTest.keyClick(target, Qt.Key_Return)
+        self.settle()
+
+    def tap(self, view, row=0):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+        r = view.visualItemRect(view.item(row))
+        p = QPoint(r.left() + 30, r.top() + r.height() // 2)
+        QTest.mousePress(view.viewport(), Qt.LeftButton, Qt.NoModifier, p)
+        QTest.mouseRelease(view.viewport(), Qt.LeftButton, Qt.NoModifier, p, 60)
+        self.settle(250)
+
+    def quantities(self):
+        return [str(line.quantity) for line in self.window.cart.lines]
+
+    def test_kartani_bosgandan_keyin_skaner_ishlaydi(self):
+        w = self.window
+        w.fill_catalog(self.backend.search("Buhanka"))
+        self.settle()
+        self.tap(w.catalog_list)
+        self.assertEqual(self.quantities(), ["1"])                               # bosish ishlaydi
+        self.assertIs(self.focused(), w.scan_input)
+        self.scan()
+        self.assertEqual(self.quantities(), ["2"])
+
+    def test_qidirib_bosgandan_keyin_skaner_matnga_qoshilmaydi(self):
+        from PySide6.QtTest import QTest
+        w = self.window
+        QTest.keyClicks(w.scan_input, "Buhanka")
+        self.settle(400)                                                         # qidiruv 180 ms kutadi
+        self.assertGreater(w.catalog_list.count(), 0)
+        self.tap(w.catalog_list)
+        self.assertEqual(self.quantities(), ["1"])
+        self.assertGreater(w.catalog_list.count(), 0)                            # natija ekranda qoladi
+        self.scan()
+        self.assertEqual(self.quantities(), ["2"])
+        self.assertEqual(w.scan_input.text(), "")
+
+    def test_chek_qatoridan_keyin_skaner_ishlaydi(self):
+        from PySide6.QtWidgets import QDialog
+        from .ui.dialogs import QuantityDialog
+        w = self.window
+        self.scan()
+        for result in (QDialog.Rejected, QDialog.Accepted):
+            with patch.object(QuantityDialog, "exec", lambda self, r=result: r):
+                self.tap(w.receipt_list)
+            self.assertIs(self.focused(), w.scan_input, result)
+            before = sum(int(q) for q in self.quantities())
+            self.scan()
+            self.assertEqual(sum(int(q) for q in self.quantities()), before + 1, result)
+
+    def test_kassa_ekranida_faqat_maydon_fokus_oladi(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+        w = self.window
+        takers = [x for x in w.centralWidget().findChildren(QWidget)
+                  if x.focusPolicy() != Qt.NoFocus]
+        self.assertEqual(takers, [w.scan_input])
+
+    def test_kirish_ekrani_fokusi_tegilmaydi(self):
+        """Kirish ekrani (PIN) kassa oynasi USTIDA turadi — klaviatura unga
+        yozadi, orqadagi shtrix-kod maydoniga emas."""
+        from PySide6.QtTest import QTest
+        from .ui.login_screen import LoginScreen
+        screen = LoginScreen(self.window, "Shaxar 1", "kassa3")
+        screen.setGeometry(self.window.rect())
+        screen.show()
+        screen.setFocus()
+        self.settle()
+        self.assertIs(self.focused(), screen)
+        QTest.keyClicks(self.focused(), "1234")
+        self.settle()
+        self.assertIs(self.focused(), screen)
+        self.assertEqual(self.window.scan_input.text(), "")
+        screen.deleteLater()
