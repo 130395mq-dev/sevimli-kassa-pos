@@ -591,3 +591,23 @@ class ScanFocusTest(unittest.TestCase):
         self.assertIs(self.focused(), screen)
         self.assertEqual(self.window.scan_input.text(), "")
         screen.deleteLater()
+
+
+def tearDownModule():
+    """Testlar qoldirgan Qt oynalarini QApplication tirikligida yo'q qiladi.
+
+    PySide6 6.12 (2026-10-08) da ota-onasiz dialoglar Python yopilayotganda
+    tartibsiz o'chirilib, jarayon segfault bilan tugardi — testlarning
+    hammasi OK bo'lsa ham CI yiqilardi.
+    """
+    import gc
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is None:
+        return
+    gc.collect()
+    for widget in app.topLevelWidgets():
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    gc.collect()
