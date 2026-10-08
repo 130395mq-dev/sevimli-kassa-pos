@@ -477,6 +477,7 @@ class MainWindow(QMainWindow):
         root.addLayout(body, 1)
 
         self._shortcuts()
+        self._keep_scan_focus()
         self.refresh()
         self.scan_input.setFocus()
 
@@ -856,6 +857,32 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ harakatlar
 
+    def _keep_scan_focus(self) -> None:
+        """Skaner doim shtrix-kod maydoniga yozsin.
+
+        Skaner kodni klaviatura tugmalari kabi «yozadi» — fokus qayerda
+        bo'lsa, o'sha yerga. Ilgari tovar kartasi, chek qatori yoki
+        «TO'LOV» tugmasi bosilganda fokus o'shalarga o'tib qolardi va
+        keyingi skaner kodi yo'qolardi: kassir har gal maydonni qo'l bilan
+        bosishi kerak edi (egasi, 2026-10-08). Endi kassa ekranidagi hech
+        narsa fokusni olmaydi — bosish avvalgidek ishlaydi, fokus esa
+        maydonda qoladi. Kirish ekrani va oynalar bunga kirmaydi: ular
+        markaziy qismdan tashqarida va o'z klaviaturasi bilan ishlaydi.
+        """
+        for widget in self.centralWidget().findChildren(QWidget):
+            if widget is not self.scan_input and widget.focusPolicy() != Qt.NoFocus:
+                widget.setFocusPolicy(Qt.NoFocus)
+
+    def _ready_for_scan(self) -> None:
+        """Fokus — shtrix-kod maydoniga; qidiruv matni belgilanadi.
+
+        Kassir nom bilan qidirib kartani bossa, maydonda «uzum» qoladi.
+        Belgilangan matn keyingi skaner kodi bilan almashadi — kod
+        «uzum4780…» bo'lib qo'shilib ketmaydi. Qidiruv natijasi esa
+        ekranda qoladi (yana bir tovar bosish mumkin)."""
+        self.scan_input.setFocus()
+        self.scan_input.selectAll()
+
     def _add_to_cart(self, product, quantity=1) -> bool:
         """Chekka qo'shishning YAGONA yo'li — qoldiq nazorati shu yerda.
 
@@ -939,6 +966,7 @@ class MainWindow(QMainWindow):
         product = item.data(Qt.UserRole)
         if product:
             self._add_to_cart(product)
+        self._ready_for_scan()
 
     def eventFilter(self, obj, event):
         """Katalogда o'ng chekkadagi yulduzchaga bosilса — tovarni «sevimli»
@@ -1006,7 +1034,9 @@ class MainWindow(QMainWindow):
         if index < 0:
             return
         dialog = QuantityDialog(self.cart.lines[index], self)
-        if dialog.exec() != QuantityDialog.Accepted:
+        accepted = dialog.exec() == QuantityDialog.Accepted
+        self.scan_input.setFocus()
+        if not accepted:
             return
         if dialog.deleted:
             self.cart.remove(index)
