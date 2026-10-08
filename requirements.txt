@@ -1,4 +1,6 @@
 # Sevimli Kassa POS terminal — kutubxonalar.
 # Versiya oralig'i: kassalarda turli Python bo'lishi mumkin.
-PySide6>=6.6,<7
+# <6.12: PySide6 6.12.0 (2026-10-08 chiqqan) kassalarda sinalmagan, 1.18.12
+# 6.11.2 bilan yig'ilgan. Yangisiga o'tish — alohida, sinab ko'rib.
+PySide6>=6.6,<6.12
 pywin32>=306 ; sys_platform == "win32"
