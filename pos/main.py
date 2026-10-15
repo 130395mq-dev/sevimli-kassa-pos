@@ -800,27 +800,17 @@ def main() -> int:
             done += " · internet qaytganda serverga ketadi"
         window.flash(done)
 
-    def park_cart() -> None:
-        """Chekni chetga qo'yadi — mijoz biror narsani unutgan bo'lsa."""
-        from .cart import cart_to_dict
-
-        if window.cart.is_empty:
-            window.flash(tr("Chek bo'sh"))
-            return
-
-        names = ", ".join(l.product.name for l in window.cart.lines[:3])
-        if window.cart.count > 3:
-            names += f" +{window.cart.count - 3}"
-
-        store.park(names, window.cart.total, cart_to_dict(window.cart))
-        window.cart.clear()
-        window.refresh()
-        window.flash(tr("Chek qoldirildi"))
-
+    # «Chekni keyinga qoldirish» olib tashlandi (egasi, 2026-10-15):
+    # kassirlar tovarni urib, chekni yakunlamay qoldirib qo'yishardi.
+    # Ilgari qoldirilgan cheklar shu yerdan ochib yakunlanadi.
     def open_parked() -> None:
-        from .cart import cart_from_dict
         from .money import som
         from .ui.dialogs import PickDialog
+
+        if not window.cart.is_empty:
+            # Ochiq chekni endi chetga qo'yib bo'lmaydi — avval yakunlansin
+            window.flash(tr("Avval chekni yakunlang yoki tozalang"))
+            return
 
         rows = [
             (f"{r['created_at'][11:16]}   ·   {r['summary']}\n{som(r['total'])} so'm",
@@ -833,10 +823,6 @@ def main() -> int:
         )
         if dialog.exec() != PickDialog.Accepted or dialog.chosen is None:
             return
-
-        if not window.cart.is_empty:
-            # Ochiq chek yo'qolmasin — uni ham chetga qo'yamiz
-            park_cart()
 
         data = store.unpark(dialog.chosen)
         if data:
@@ -965,8 +951,6 @@ def main() -> int:
             cash_move("in")
         elif code == "cash_out":
             cash_move("out")
-        elif code == "park":
-            park_cart()
         elif code == "parked":
             open_parked()
         elif code == "history":
@@ -1030,6 +1014,9 @@ def main() -> int:
         quit_app()
 
     backend.menu_action = menu_action
+    # Menyuda yashiriladigan bandlar: qoldirilgan chek qolmagan bo'lsa —
+    # «Qoldirilgan cheklar» kerak emas
+    backend.menu_hidden = lambda: set() if store.parked_count() else {"parked"}
 
     def do_return() -> None:
         """Qaytarish oqimi: savdo → tovarlar → pul → tayyor.

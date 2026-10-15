@@ -815,7 +815,8 @@ class MenuDialog(QDialog):
     #: Tanlangan amal — oyna yopilgach o'qiladi
     action: str | None = None
 
-    def __init__(self, parent=None, title_text: str = "", subtitle: str = ""):
+    def __init__(self, parent=None, title_text: str = "", subtitle: str = "",
+                 hidden=()):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setModal(True)
@@ -832,8 +833,14 @@ class MenuDialog(QDialog):
 
         # Tartib MoySklad Kassa menyusidagidek: avval kundalik ishlar,
         # keyin pul bilan bog'liqlari, oxirida chiqish.
+        #
+        # «Chekni keyinga qoldirish» OLIB TASHLANDI (egasi, 2026-10-15):
+        # kassirlar tovarni urib, chekni yakunlamay qoldirib qo'yishardi —
+        # savdo yozilmasdi. Ilgari qoldirilgan cheklar «Qoldirilgan
+        # cheklar» dan ochib yakunlanadi; ular qolmasa bu band ham
+        # ko'rinmaydi (`hidden`).
+        lang_label = "Til: Русский" if get_lang() == "uz" else "Язык: O'zbekcha"
         items = [
-            ("park", tr("Chekni keyinga qoldirish"), False),
             ("parked", tr("Qoldirilgan cheklar"), False),
             ("history", tr("Tarix"), False),
             ("return", tr("Qaytarish"), False),
@@ -843,16 +850,15 @@ class MenuDialog(QDialog):
             ("refresh", tr("Ma'lumotlarni yangilash"), False),
             ("settings", tr("Printer sozlamalari"), False),
             ("about", tr("Dastur haqida"), False),
+            # Til almashtirish — bosilsa ikkinchi tilga o'tadi (qayta ochilgach)
+            ("language", lang_label, False),
             ("close_shift", tr("Smenani yopish"), True),
             ("quit", tr("Chiqish"), False),
         ]
+        hidden = set(hidden or ())
         for code, text, emph in items:
-            col.addWidget(self._menu_button(text, code, emph))
-
-        # Til almashtirish — bosilsa ikkinchi tilga o'tadi (qayta ochilgach).
-        # "about" dan keyin, "close_shift" dan oldin joylashadi.
-        lang_label = "Til: Русский" if get_lang() == "uz" else "Язык: O'zbekcha"
-        col.insertWidget(10, self._menu_button(lang_label, "language", False))
+            if code not in hidden:
+                col.addWidget(self._menu_button(text, code, emph))
 
         col.addStretch(1)
 
@@ -914,6 +920,7 @@ class MenuDialog(QDialog):
                 "QPushButton:pressed { background:rgba(255,255,255,0.20); }"
                 "QPushButton:disabled { color:rgba(255,255,255,0.38); }"
             )
+        btn.setProperty("code", code)
         btn.clicked.connect(lambda _=False, c=code: self.pick(c))
         return btn
 
