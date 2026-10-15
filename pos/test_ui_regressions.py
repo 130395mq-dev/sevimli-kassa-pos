@@ -593,6 +593,64 @@ class ScanFocusTest(unittest.TestCase):
         screen.deleteLater()
 
 
+class NoParkTest(unittest.TestCase):
+    """«Chekni keyinga qoldirish» olib tashlandi (egasi, 2026-10-15): kassirlar
+    tovarni urib, chekni yakunlamay qoldirib qo'yishardi. Ilgari
+    qoldirilgan cheklar «Qoldirilgan cheklar» dan ochib yakunlanadi."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
+    def codes(self, **kw):
+        from PySide6.QtWidgets import QPushButton
+        from .ui.dialogs import MenuDialog
+        dialog = MenuDialog(**kw)
+        try:
+            return [b.property("code") for b in dialog.findChildren(QPushButton)
+                    if b.property("code")]
+        finally:
+            dialog.deleteLater()
+
+    def test_menyuda_qoldirish_yoq(self):
+        codes = self.codes()
+        self.assertNotIn("park", codes)
+        self.assertIn("parked", codes)
+        # Til tugmasi avvalgidek «Smenani yopish» dan oldin
+        self.assertEqual(codes[codes.index("close_shift") - 1], "language")
+
+    def test_qoldirilgan_chek_yoq_bolsa_band_yashirin(self):
+        codes = self.codes(hidden={"parked"})
+        self.assertNotIn("parked", codes)
+        self.assertIn("history", codes)
+
+    def test_oyna_backenddan_yashirinlarni_oladi(self):
+        from .ui.dialogs import MenuDialog
+        from .ui.main_window import MainWindow
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(Path(folder) / "kassa.db")
+            store.replace_products(PRODUCTS)
+            backend = LiveBackend(FakeHub(), store, METHODS)
+            backend.menu_hidden = lambda: {"parked"}
+            window = MainWindow(backend)
+            seen = {}
+
+            def fake_exec(dialog):
+                from PySide6.QtWidgets import QPushButton
+                seen["codes"] = [b.property("code") for b in dialog.findChildren(QPushButton)
+                                 if b.property("code")]
+                return MenuDialog.Rejected
+
+            with patch.object(MenuDialog, "exec", fake_exec):
+                window.on_menu()
+            self.assertNotIn("parked", seen["codes"])
+            self.assertNotIn("park", seen["codes"])
+            window.close()
+            window.deleteLater()
+            store.close() if hasattr(store, "close") else None
+
+
 def tearDownModule():
     """Testlar qoldirgan Qt oynalarini QApplication tirikligida yo'q qiladi.
 
