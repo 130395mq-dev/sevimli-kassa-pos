@@ -1112,7 +1112,9 @@ class MainWindow(QMainWindow):
         from .dialogs import MenuDialog
 
         subtitle = self.shift_label.text() if hasattr(self, "shift_label") else ""
-        dialog = MenuDialog(self, title_text=self.windowTitle(), subtitle=subtitle)
+        hidden = getattr(self.backend, "menu_hidden", None)
+        dialog = MenuDialog(self, title_text=self.windowTitle(), subtitle=subtitle,
+                            hidden=hidden() if callable(hidden) else ())
         if dialog.exec() != MenuDialog.Accepted or not dialog.action:
             return
 
