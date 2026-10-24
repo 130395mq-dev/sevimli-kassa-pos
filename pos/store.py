@@ -295,6 +295,18 @@ class Store:
         p.price = p.price_for(self.price_type_id)
         return p
 
+    def barcodes_of(self, product_id) -> list[str]:
+        """Tovarning barcha shtrix-kodlari: asosiy + qo'shimcha (barcodes)."""
+        codes = [r[0] for r in self.db.execute(
+            "SELECT code FROM barcodes WHERE product_id = ?", (product_id,)
+        ).fetchall()]
+        row = self.db.execute(
+            "SELECT barcode FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if row and row[0] and row[0] not in codes:
+            codes.append(row[0])
+        return codes
+
     def by_barcode(self, code: str) -> Product | None:
         """Aynan shu kodli tovar — asosiy kod yoki qo'shimcha kodlardan biri."""
         found = self.by_barcode_qty(code)
@@ -354,6 +366,56 @@ class Store:
             (plu, plu),
         ).fetchone()
         return self._to_product(row) if row else None
+
+    # ------------------------------------------- faqat kod bo'yicha
+
+    def _code_rows(self, q: str, prefix: bool, limit: int):
+        """Kod bo'yicha qatorlar: aniq (katta-kichik harf farqsiz), raqamli
+        kod oldidagi nollarsiz («117» → «00117»), `prefix` bo'lsa — kodi
+        shu bilan boshlanganlar ham. Natija: aniqlari oldin."""
+        conds = ["code = ? COLLATE NOCASE"]
+        params: list = [q]
+        if q.isdigit() and int(q) > 0:
+            conds.append("(code GLOB '[0-9]*' AND CAST(code AS INTEGER) = ?)")
+            params.append(int(q))
+        if prefix:
+            esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            conds.append("code LIKE ? ESCAPE '\\'")
+            params.append(esc + "%")
+        rows = self.db.execute(
+            f"SELECT * FROM products WHERE code != '' AND ({' OR '.join(conds)})"
+            " ORDER BY code LIMIT ?",
+            (*params, limit * 3),
+        ).fetchall()
+
+        def exact(r) -> bool:
+            code = (r["code"] or "")
+            if code.lower() == q.lower():
+                return True
+            return q.isdigit() and code.isdigit() and int(code) == int(q)
+
+        rows.sort(key=lambda r: (0 if exact(r) else 1, (r["code"] or "")))
+        return rows[:limit], exact
+
+    def search_by_code(self, text: str, limit: int = 50) -> list[Product]:
+        """Qidiruv FAQAT tovar kodi bo'yicha (egasi, 2026-10-24: «kodi bilan
+        qidirish bo'lsin, faqat kod bilan»). Nom bo'yicha qidirilmaydi —
+        kassir o'xshash nomli boshqa tovarni (Cola 2 L / 2,5 L) bosib
+        yubormasin. Qidiruv bo'sh bo'lsa — sevimlilar (avvalgidek)."""
+        q = (text or "").strip()
+        if not q:
+            return self.search("")
+        rows, _ = self._code_rows(q, prefix=True, limit=limit)
+        return [self._to_product(r) for r in rows]
+
+    def by_code(self, text: str) -> Product | None:
+        """Aynan shu kodli bitta tovar (kassir kodni terib Enter bosganda)."""
+        q = (text or "").strip()
+        if not q:
+            return None
+        rows, exact = self._code_rows(q, prefix=False, limit=2)
+        hits = [r for r in rows if exact(r)]
+        return self._to_product(hits[0]) if len(hits) == 1 else None
 
     def search(self, text: str, limit: int = 200) -> list[Product]:
         """Nom yoki kod bo'yicha qidiruv.
