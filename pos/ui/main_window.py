@@ -923,6 +923,20 @@ class MainWindow(QMainWindow):
             self._add_to_cart(product, quantity)
             return
 
+        # 1b. Faqat kod rejimi: kassir tovar kodini terib Enter bosdi
+        #     (00117 — banan). Shtrix-kodli tovar baribir skanerlanadi.
+        by_code = getattr(self.backend, "find_by_code", None)
+        product = by_code(code) if (callable(by_code) and self._code_search()) else None
+        if product is not None:
+            check = getattr(self.backend, "name_pick_problem", None)
+            problem = check(product) if callable(check) else ""
+            if problem:
+                self.flash(problem)
+                self.show_scan_required(problem)
+            else:
+                self._add_to_cart(product)
+            return
+
         # 2. Tovar emas — mijoz kartasi (nakopitelniy) bo'lishi mumkin
         finder = getattr(self.backend, "find_customer_by_code", None)
         customer = finder(code) if finder else None
@@ -946,7 +960,10 @@ class MainWindow(QMainWindow):
             kassir yozib bo'lganda bir marta qidiramiz.
         """
         text = text.strip()
-        if text.isdigit():
+        if text.isdigit() and not (self._code_search() and len(text) <= self.CODE_MAX):
+            # Skaner (uzun raqam) — ro'yxatga tegmaymiz. Faqat kod rejimida
+            # qisqa raqam (00117) — tovar kodi, qidiramiz.
+            self._search_timer.stop()
             return
         query = "" if len(text) < 2 else text
         if query == self._catalog_query:
@@ -954,6 +971,19 @@ class MainWindow(QMainWindow):
             return
         self._pending_query = query
         self._search_timer.start()
+
+    #: Faqat kod rejimida: shundan uzun raqam — skaner kodi (EAN-8/13)
+    CODE_MAX = 7
+
+    def _code_search(self) -> bool:
+        """Panel: «Kassada qidiruv faqat tovar kodi bo'yicha»."""
+        return bool(getattr(self.backend, "search_code_only", False))
+
+    def set_search_mode(self, code_only: bool) -> None:
+        """Qidiruv maydonidagi yozuv — kassir nimani terishini bilsin."""
+        self.scan_input.setPlaceholderText(
+            tr("Shtrix-kod yoki tovar kodi") if code_only
+            else tr("Tovar nomi yoki shtrix-kod"))
 
     def _run_search(self) -> None:
         query = self._pending_query
@@ -965,8 +995,23 @@ class MainWindow(QMainWindow):
     def on_catalog_pick(self, item: QListWidgetItem) -> None:
         product = item.data(Qt.UserRole)
         if product:
-            self._add_to_cart(product)
+            # Shtrix-kodli tovar nom bilan qo'shilmaydi (panel sozlamasi,
+            # egasi 2026-10-24): kassir narxi bir xil boshqa tovarni urib
+            # yuborardi. Sabab va qoida — pos/skaner.py.
+            check = getattr(self.backend, "name_pick_problem", None)
+            problem = check(product) if callable(check) else ""
+            if problem:
+                self.flash(problem)
+                self.show_scan_required(problem)
+            else:
+                self._add_to_cart(product)
         self._ready_for_scan()
+
+    def show_scan_required(self, message: str) -> None:
+        """Kassir ko'rmay qolmasin — kichik status yozuvi yetmaydi."""
+        from PySide6.QtWidgets import QMessageBox
+
+        QMessageBox.warning(self, tr("Skanerlang"), message)
 
     def eventFilter(self, obj, event):
         """Katalogда o'ng chekkadagi yulduzchaga bosilса — tovarni «sevimli»
@@ -989,7 +1034,9 @@ class MainWindow(QMainWindow):
                     if product is not None and toggle:
                         toggle(product.id)
                         q = self.scan_input.text().strip()
-                        query = q if (len(q) >= 2 and not q.isdigit()) else ""
+                        digits_ok = (not q.isdigit()
+                                     or (self._code_search() and len(q) <= self.CODE_MAX))
+                        query = q if (len(q) >= 2 and digits_ok) else ""
                         self.fill_catalog(self.backend.search(query))
                     return True  # yutamiz — savatga qo'shilmaydi
         return super().eventFilter(obj, event)
@@ -1113,8 +1160,10 @@ class MainWindow(QMainWindow):
 
         subtitle = self.shift_label.text() if hasattr(self, "shift_label") else ""
         hidden = getattr(self.backend, "menu_hidden", None)
+        allow_park = getattr(self.backend, "allow_park", None)
         dialog = MenuDialog(self, title_text=self.windowTitle(), subtitle=subtitle,
-                            hidden=hidden() if callable(hidden) else ())
+                            hidden=hidden() if callable(hidden) else (),
+                            allow_park=bool(allow_park()) if callable(allow_park) else False)
         if dialog.exec() != MenuDialog.Accepted or not dialog.action:
             return
 
@@ -1276,7 +1325,7 @@ class MainWindow(QMainWindow):
         # Tashqaridan (sinxronizatsiyadan keyin) chaqirilganda ham
         # maydon bilan mos holatni eslab qolamiz.
         current = self.scan_input.text().strip() if hasattr(self, "scan_input") else ""
-        if not current.isdigit():
+        if not current.isdigit() or (self._code_search() and len(current) <= self.CODE_MAX):
             self._catalog_query = "" if len(current) < 2 else current
 
         lst = self.catalog_list
