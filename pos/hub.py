@@ -558,8 +558,17 @@ class LiveBackend:
 
         return None
 
+    #: Panel: «Kassada qidiruv faqat tovar kodi bo'yicha» (hello'dan keladi)
+    search_code_only = False
+
     def search(self, text: str) -> list[Product]:
+        if self.search_code_only and (text or "").strip():
+            return self.store.search_by_code(text)
         return self.store.search(text)
+
+    def find_by_code(self, text: str):
+        """Kod terib Enter — aynan shu kodli tovar (faqat kod rejimida)."""
+        return self.store.by_code(text) if self.search_code_only else None
 
     # --------------------------------------------------- sevimli (pin) tovarlar
 
