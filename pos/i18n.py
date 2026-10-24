@@ -298,6 +298,13 @@ _RU: dict[str, str] = {
     "«{name}» omborda yo'q": "«{name}» нет на складе",
     "«{name}»: omborda {n} ta": "«{name}»: на складе {n}",
 
+    # --- faqat skaner (shtrix-kodli tovar nom bilan qo'shilmaydi) ---
+    "«{name}» — shtrix-kodi bor. Tovarni skanerlang yoki shtrix-kod raqamini tering.":
+        "«{name}» — есть штрихкод. Отсканируйте товар или введите цифры штрихкода.",
+    "Skanerlang": "Отсканируйте",
+    "Shtrix-kod yoki tovar kodi": "Штрихкод или код товара",
+    "Chekni keyinga qoldirish o'chirilgan": "Отложить чек запрещено",
+
     # --- til ---
     "Til": "Язык",
     "O'zbekcha": "Узбекский",
