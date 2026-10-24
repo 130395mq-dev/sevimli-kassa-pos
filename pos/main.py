@@ -681,6 +681,31 @@ def main() -> int:
     # Kassaning panel sozlamalari — ilova shunga qarab ishlaydi.
     kset = info.get("settings") or {}
     backend.track_stock = bool(kset.get("track_stock"))
+    # Panel: «Kassada qidiruv faqat tovar kodi bo'yicha» (egasi, 2026-10-24)
+    backend.search_code_only = bool(kset.get("search_code_only"))
+    window.set_search_mode(backend.search_code_only)
+
+    def park_allowed() -> bool:
+        """Panel: «Chekni keyinga qoldirishga ruxsat» (standart — yo'q)."""
+        return bool(kset.get("allow_park"))
+
+    # Panel: «Shtrix-kodli tovarni faqat skaner bilan qo'shish» — kassir
+    # katalogdan nom bilan bosganda tekshiriladi (pos/skaner.py).
+    from . import skaner as _skaner
+
+    def name_pick_problem(product) -> str:
+        try:
+            codes = store.barcodes_of(product.id)
+        except Exception:  # noqa: BLE001 — tekshiruv sotuvni yiqitmasin
+            codes = []
+        try:
+            favorite = bool(store.is_favorite(product.id))
+        except Exception:  # noqa: BLE001
+            favorite = False
+        return _skaner.name_pick_problem(product, codes, kset, session.get("cashier"),
+                                         favorite=favorite)
+
+    backend.name_pick_problem = name_pick_problem
 
     # ------------------------------------------------------- narx turi
     #
@@ -802,13 +827,35 @@ def main() -> int:
 
     # «Chekni keyinga qoldirish» olib tashlandi (egasi, 2026-10-15):
     # kassirlar tovarni urib, chekni yakunlamay qoldirib qo'yishardi.
-    # Ilgari qoldirilgan cheklar shu yerdan ochib yakunlanadi.
+    # 2026-10-24: egasi panelda yoqib-o'chiradigan qildi — kassa sozlamasi
+    # «Chekni keyinga qoldirishga ruxsat» (`allow_park`, standart o'chiq).
+    # Ilgari qoldirilgan cheklar har doim shu yerdan ochib yakunlanadi.
+    def park_cart() -> None:
+        """Chekni chetga qo'yadi — mijoz biror narsani unutgan bo'lsa."""
+        from .cart import cart_to_dict
+
+        if not park_allowed():
+            window.flash(tr("Chekni keyinga qoldirish o'chirilgan"))
+            return
+        if window.cart.is_empty:
+            window.flash(tr("Chek bo'sh"))
+            return
+
+        names = ", ".join(l.product.name for l in window.cart.lines[:3])
+        if window.cart.count > 3:
+            names += f" +{window.cart.count - 3}"
+
+        store.park(names, window.cart.total, cart_to_dict(window.cart))
+        window.cart.clear()
+        window.refresh()
+        window.flash(tr("Chek qoldirildi"))
+
     def open_parked() -> None:
         from .money import som
         from .ui.dialogs import PickDialog
 
-        if not window.cart.is_empty:
-            # Ochiq chekni endi chetga qo'yib bo'lmaydi — avval yakunlansin
+        if not window.cart.is_empty and not park_allowed():
+            # Ochiq chekni chetga qo'yib bo'lmaydi — avval yakunlansin
             window.flash(tr("Avval chekni yakunlang yoki tozalang"))
             return
 
@@ -823,6 +870,10 @@ def main() -> int:
         )
         if dialog.exec() != PickDialog.Accepted or dialog.chosen is None:
             return
+
+        if not window.cart.is_empty:
+            # Ruxsat bor kassa: ochiq chek yo'qolmasin — uni ham chetga qo'yamiz
+            park_cart()
 
         data = store.unpark(dialog.chosen)
         if data:
@@ -951,6 +1002,8 @@ def main() -> int:
             cash_move("in")
         elif code == "cash_out":
             cash_move("out")
+        elif code == "park":
+            park_cart()
         elif code == "parked":
             open_parked()
         elif code == "history":
@@ -1014,9 +1067,11 @@ def main() -> int:
         quit_app()
 
     backend.menu_action = menu_action
-    # Menyuda yashiriladigan bandlar: qoldirilgan chek qolmagan bo'lsa —
-    # «Qoldirilgan cheklar» kerak emas
-    backend.menu_hidden = lambda: set() if store.parked_count() else {"parked"}
+    # Menyuda yashiriladigan bandlar: qoldirish o'chiq va qoldirilgan chek
+    # qolmagan bo'lsa — «Qoldirilgan cheklar» kerak emas
+    backend.menu_hidden = lambda: (
+        set() if (park_allowed() or store.parked_count()) else {"parked"})
+    backend.allow_park = park_allowed
 
     def do_return() -> None:
         """Qaytarish oqimi: savdo → tovarlar → pul → tayyor.
@@ -1335,6 +1390,11 @@ def main() -> int:
         info.update(fresh)
         price_policy.offer(fresh)
         backend.track_stock = bool(kset.get("track_stock"))
+        code_only = bool(kset.get("search_code_only"))
+        if code_only != backend.search_code_only:
+            backend.search_code_only = code_only
+            window.set_search_mode(code_only)
+            window.fill_catalog(backend.search(window.scan_input.text().strip()))
         _refresh_price_ui()
         # To'lov turlari — panelda qo'shilgan/olib tashlangan/nomi
         # o'zgargan bo'lsa, keyingi to'lov oynasi yangi ro'yxat bilan
