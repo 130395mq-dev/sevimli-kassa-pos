@@ -816,7 +816,7 @@ class MenuDialog(QDialog):
     action: str | None = None
 
     def __init__(self, parent=None, title_text: str = "", subtitle: str = "",
-                 hidden=()):
+                 hidden=(), allow_park: bool = False):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setModal(True)
@@ -839,8 +839,13 @@ class MenuDialog(QDialog):
         # savdo yozilmasdi. Ilgari qoldirilgan cheklar «Qoldirilgan
         # cheklar» dan ochib yakunlanadi; ular qolmasa bu band ham
         # ko'rinmaydi (`hidden`).
+        #
+        # 2026-10-24: egasi panelda yoqib-o'chiradigan qildi — kassa
+        # sozlamasi «Chekni keyinga qoldirishga ruxsat» (`allow_park`).
+        # Yoqilgan kassada band yana chiqadi; standart — o'chiq.
         lang_label = "Til: Русский" if get_lang() == "uz" else "Язык: O'zbekcha"
         items = [
+            *([("park", tr("Chekni keyinga qoldirish"), False)] if allow_park else []),
             ("parked", tr("Qoldirilgan cheklar"), False),
             ("history", tr("Tarix"), False),
             ("return", tr("Qaytarish"), False),
