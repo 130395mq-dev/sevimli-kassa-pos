@@ -452,6 +452,32 @@ class OfflineShiftDayTest(unittest.TestCase):
         self.assertEqual(r.expected_cash, 160_000_00)
         self.assertEqual(r.to_hand_over, 60_000_00)
 
+    def test_local_report_subtracts_returns(self):
+        """Egasi (2026-10-24): «zakrit smena chekida umumiy savdodan vozvrat
+        ayrilmayapti» — internetsiz yopilgan chek ham serverdagidek."""
+        from pos.smena import build_shift_receipt
+        from shared.receipt import render
+        _, tag = self._offline_day()
+        ret = _sale("qaytarish-1", cash=20_000_00, tag=tag,
+                    shift_uuid=self.store.get_local_shift()["local_uuid"])
+        ret.update(kind="return", net_total=20_000_00)
+        self.store.queue("qaytarish-1", ret, "2026-09-21T15:00:00+00:00")
+        r = build_shift_receipt(
+            self.store, METHODS, market="Sevimli", point="Shahar",
+            register="Kassa-1", cashier="Kassir", shift_no="—",
+            opened_at="2026-09-21T08:00:00+00:00",
+            closed_at="2026-09-21T20:00:00+00:00",
+            opening_cash=100_000_00, shift_tag=tag)
+        self.assertEqual(r.net_total, 100_000_00)
+        self.assertEqual(r.returns_total, 20_000_00)
+        self.assertEqual(r.total_after_returns, 80_000_00)
+        self.assertTrue(r.is_balanced)
+        text = render(r)
+        self.assertRegex(text, r"UMUMIY SAVDO\s+80 000")
+        tail = text[text.index("SHU SMENA SAVDOSI"):]
+        self.assertIn("80 000 so'm", tail)
+        self.assertIn("(qaytarishlar ayrilgan)", tail)
+
     def test_close_offline_then_sync_in_the_evening(self):
         _, tag = self._offline_day()
         result = self.backend.finish_shift(None, local_text="MAHALLIY HISOBOT")
