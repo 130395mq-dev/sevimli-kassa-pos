@@ -48,6 +48,59 @@ class DeploymentTest(unittest.TestCase):
                 deployment.stage(self.source, self.target)
         self.assertEqual(deployment.manifest(self.target), self.old)
 
+    def test_briefly_locked_file_is_copied_after_retry(self):
+        # unzavod2, 2026-10-25: antivirus yangi ucrtbase.dll ni bir lahza
+        # band qildi → «Permission denied» → butun yangilanish bekor bo'ldi.
+        original = deployment.shutil.copy2
+        calls = {'n': 0}
+        def flaky(src, dst, *args, **kwargs):
+            if Path(src).name == 'added.dll' and calls['n'] < 2:
+                calls['n'] += 1
+                raise PermissionError(13, 'Permission denied', str(dst))
+            return original(src, dst, *args, **kwargs)
+        with mock.patch.object(deployment.shutil, 'copy2', side_effect=flaky), \
+             mock.patch.object(deployment.time, 'sleep') as sleep:
+            staged = deployment.stage(self.source, self.target)
+        self.assertEqual(calls['n'], 2)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(deployment.manifest(staged), self.new)
+        self.assertEqual(deployment.manifest(self.target), self.old)
+
+    def test_permanently_locked_file_fails_without_touching_install(self):
+        original = deployment.shutil.copy2
+        def locked(src, dst, *args, **kwargs):
+            if Path(src).name == 'added.dll':
+                raise PermissionError(13, 'Permission denied', str(dst))
+            return original(src, dst, *args, **kwargs)
+        with mock.patch.object(deployment.shutil, 'copy2', side_effect=locked), \
+             mock.patch.object(deployment.time, 'sleep') as sleep:
+            with self.assertRaises(OSError):
+                deployment.stage(self.source, self.target)
+        self.assertEqual(sleep.call_count, deployment.COPY_RETRIES - 1)
+        self.assertEqual(deployment.manifest(self.target), self.old)
+
+    def test_disk_full_is_not_retried(self):
+        def full(src, dst, *args, **kwargs):
+            raise OSError(28, 'No space left on device')
+        with mock.patch.object(deployment.shutil, 'copy2', side_effect=full), \
+             mock.patch.object(deployment.time, 'sleep') as sleep:
+            with self.assertRaises(OSError):
+                deployment.stage(self.source, self.target)
+        sleep.assert_not_called()
+        self.assertEqual(deployment.manifest(self.target), self.old)
+
+    def test_runtime_check_allows_slow_first_start(self):
+        self.assertGreaterEqual(update_worker.RUNTIME_CHECK_TIMEOUT, 180)
+        result_dir = self.root / 'rc'
+        def fake_run(args, timeout, **kwargs):
+            self.assertEqual(timeout, update_worker.RUNTIME_CHECK_TIMEOUT)
+            result_dir.mkdir()
+            (result_dir / 'result.json').write_text(json.dumps(
+                {'ok': True, 'frozen': True, 'integrity': 'ok'}))
+            return mock.Mock(returncode=0)
+        with mock.patch.object(update_worker.subprocess, 'run', side_effect=fake_run):
+            update_worker.runtime_check(self.source / 'SevimliKassa.exe', result_dir)
+
     def test_corrupted_copy_is_never_activated(self):
         original = deployment.shutil.copytree
         def corrupt(src, dst, *args, **kwargs):

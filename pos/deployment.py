@@ -10,7 +10,26 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import time
 import uuid
+
+#: Antivirus yangi DLL/EXE ni tekshirayotganda faylni bir necha soniya band
+#: qilib turadi — Windows buni «Permission denied» (Errno 13) deb qaytaradi.
+#: 2026-10-25, unzavod2: shu sabab 1.18.16 o'rnatilmadi (bitta ucrtbase.dll).
+#: Bitta band fayl uchun butun yangilanish bekor bo'lmasin — kutib qayta
+#: urinamiz (jami ~40 s). Boshqa xatolar (masalan disk to'lgan) darhol chiqadi.
+COPY_RETRIES = 8
+COPY_WAIT = 1.5
+
+
+def _copy_with_retry(src, dst, *, follow_symlinks=True):
+    for attempt in range(COPY_RETRIES):
+        try:
+            return shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
+        except PermissionError:
+            if attempt == COPY_RETRIES - 1:
+                raise
+            time.sleep(COPY_WAIT * (attempt + 1))
 
 
 def _plain_tree(root: Path) -> None:
@@ -48,7 +67,7 @@ def stage(source: Path, target: Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     staged = target.with_name('.' + target.name + '-staging-' + uuid.uuid4().hex)
     # Unique sibling, never overlay. A partial copy stays available for diagnosis.
-    shutil.copytree(source, staged)
+    shutil.copytree(source, staged, copy_function=_copy_with_retry)
     if manifest(staged) != before or manifest(source) != before:
         raise OSError('Application copy verification failed')
     return staged

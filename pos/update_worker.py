@@ -35,9 +35,14 @@ def wait_parent(pid: int, timeout: float = 120) -> None:
         kernel.CloseHandle(handle)
 
 
+#: Sekin kassa kompyuterida antivirus yangi EXE ni birinchi ochilishda uzoq
+#: tekshiradi — 60 s yetmay qolishi mumkin edi (unzavod2, 2026-10-25).
+RUNTIME_CHECK_TIMEOUT = 180
+
+
 def runtime_check(exe: Path, result_dir: Path) -> None:
     completed = subprocess.run(
-        [str(exe), '--check-runtime', str(result_dir)], timeout=60,
+        [str(exe), '--check-runtime', str(result_dir)], timeout=RUNTIME_CHECK_TIMEOUT,
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
