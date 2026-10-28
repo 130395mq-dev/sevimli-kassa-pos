@@ -964,6 +964,15 @@ class LiveBackend:
             self.store.set_local_shift(local)
         else:
             self.store.set_local_shift(None)
+            # Bu smenaning cheklari endi serverdagi smenaniki — belgisi ham
+            # «srv:<id>» bo'lsin. Aks holda dastur qayta ochilganda smena
+            # ikkiga bo'linib, internetsiz hisobot kam chiqardi (unzavod3 #39).
+            try:
+                moved = self.store.retag_shift(f"loc:{local['local_uuid']}",
+                                               f"srv:{sh['id']}")
+                logger.info("Smena belgisi serverdagiga o'tkazildi: %s chek", moved)
+            except Exception:  # noqa: BLE001 — belgi xatosi sinxronni to'xtatmasin
+                logger.exception("Smena belgisi o'tkazilmadi")
         logger.info("Internetsiz ochilgan smena serverга sinxronlandi: #%s",
                     sh.get("number"))
         return sh

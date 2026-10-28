@@ -336,12 +336,20 @@ def main() -> int:
             return f"loc:{local['local_uuid']}"
         return f"loc:{sh.get('opened_at', '')}"
 
-    def _enter_kassa(sh: dict) -> None:
+    def _enter_kassa(sh: dict, fresh: bool = False) -> None:
+        """`fresh` — smena hozirgina ochildi (razmen kiritildi). Aks holda
+        mavjud smenaga qaytilyapti (qayta ochilish, chiqib-kirish)."""
         session["shift"] = sh
         if sh.get("id"):
             store.set("active_shift_id", str(sh["id"]))
         # Bundan keyingi cheklar shu smenaga tegishli deb belgilanadi.
-        store.set("history_shift_tag", _history_tag(sh))
+        # Internetsiz ochilib serverga o'tgan smenaga qaytilsa — ertalabki
+        # cheklar ham shu belgiga ko'chadi (unzavod3 #39, 2026-10-28).
+        try:
+            store.enter_shift_tag(_history_tag(sh), fresh=fresh)
+        except Exception:  # noqa: BLE001 — belgi xatosi savdoni to'xtatmasin
+            logger.exception("Smena belgisi moslanmadi")
+            store.set("history_shift_tag", _history_tag(sh))
         sale_no["n"] = int(sh.get("next_receipt_number") or 1)
         window.shift_label.setText(_shift_caption(sh))
         window.centralWidget().setEnabled(True)
@@ -491,11 +499,13 @@ def main() -> int:
             _show_login()
             return
         sh = session.get("shift")
+        fresh = False
         if not sh:
             sh = open_shift(backend, who)
             if sh is None:
                 return  # bekor qildi — ekran turaveradi
-        _enter_kassa(sh)
+            fresh = True
+        _enter_kassa(sh, fresh=fresh)
 
     def _resume_saved_login() -> bool:
         """Dastur ochilganda: kassir «Chiqish» ni bosmagan bo'lsa — parolsiz
@@ -608,7 +618,7 @@ def main() -> int:
                 new_shift = open_shift(backend, who)
                 if new_shift is None:
                     return  # kassir bekor qildi
-                _enter_kassa(new_shift)
+                _enter_kassa(new_shift, fresh=True)
                 return
             _enter_kassa(sh)
             return
@@ -641,6 +651,7 @@ def main() -> int:
         except Exception as e:
             logger.info("Oflayn kirish uchun saqlanmadi: %s", e)
 
+        fresh = False
         if not sh:
             # Smena yopiq — razmen puli, keyin ochamiz
             new_shift = open_shift(backend, who)
@@ -648,7 +659,8 @@ def main() -> int:
                 login_screen.show_error(tr("Smena ochilmadi"))
                 return
             sh = new_shift
-        _enter_kassa(sh)
+            fresh = True
+        _enter_kassa(sh, fresh=fresh)
 
     def logout() -> None:
         """«Chiqish» — kassir chiqadi, dastur qoladi (kirish ekrani).
@@ -1206,6 +1218,12 @@ def main() -> int:
         # formulalar bilan hisoblanadi.
         sh = session.get("shift") or {}
         width = config.receipt_width
+        # Shu smenaning eski belgi bilan qolib ketgan cheklari ham hisobotga
+        # tushsin (internetsiz ochilib, keyin serverga o'tgan smena).
+        try:
+            store.merge_shift_tags(store.get("history_shift_tag") or "")
+        except Exception:  # noqa: BLE001 — hisobot baribir chiqsin
+            logger.exception("Smena belgilari birlashtirilmadi")
         local_text = offline_banner(
             render_shift(
                 build_shift_receipt(

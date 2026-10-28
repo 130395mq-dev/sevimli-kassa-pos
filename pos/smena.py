@@ -86,7 +86,7 @@ def build_shift_receipt(
     # uchragan tartibi saqlanadi (dict Python 3.7+ da tartibni eslaydi).
     pay_totals: dict = {}
 
-    for row in store.shift_sales(shift_tag):
+    for row in store.shift_sales(shift_tag, limit=1_000_000):
         # sent=2 — bekor qilingan (bo'sh yoki rad etilgan) chek: yakunga
         # kirmasligi kerak, aks holda pul to'g'ri chiqmaydi.
         if row["sent"] == 2:

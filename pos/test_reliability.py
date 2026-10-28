@@ -478,6 +478,79 @@ class OfflineShiftDayTest(unittest.TestCase):
         self.assertIn("80 000 so'm", tail)
         self.assertIn("(qaytarishlar ayrilgan)", tail)
 
+    def _report(self, tag):
+        from pos.smena import build_shift_receipt
+        return build_shift_receipt(
+            self.store, METHODS, market="Sevimli", point="Un zavod",
+            register="unzavod3", cashier="Kassir", shift_no="39",
+            opened_at="2026-09-21T08:00:00+00:00",
+            closed_at="2026-09-21T20:00:00+00:00",
+            opening_cash=100_000_00, shift_tag=tag)
+
+    def test_synced_shift_restart_keeps_morning_receipts(self):
+        """unzavod3 #39 (2026-10-28): smena internetsiz ochildi, keyin
+        serverga o'tdi, kunduzi kassa qayta ochildi, kechqurun yana
+        internetsiz yopildi — hisobotga 177 tadan faqat 42 chek tushgan."""
+        _, loc = self._offline_day()
+        self.hub.online = True
+        for _ in range(3):
+            self.backend.flush()
+        srv = f"srv:{self.hub._next_id}"
+        # Serverga o'tishi bilan ertalabki cheklar ham server belgisida
+        self.assertEqual(self.store.get("history_shift_tag"), srv)
+        self.assertEqual(len(self.store.shift_sales(loc)), 0)
+        self.assertEqual(len(self.store.shift_sales(srv)), 3)
+
+        # Dastur qayta ochildi — serverdagi smenaga qaytildi
+        self.store.enter_shift_tag(srv, fresh=False)
+        self.store.queue("chek-tushdan-keyin",
+                         _sale("chek-tushdan-keyin", cash=5_000_00, tag=srv),
+                         "2026-09-21T16:00:00+00:00")
+        self.hub.online = False
+        r = self._report(self.store.get("history_shift_tag"))
+        self.assertEqual(r.receipts_count, 4)
+        self.assertEqual(r.gross_total, 105_000_00)
+        self.assertEqual(r.cash_out, 10_000_00)
+
+    def test_old_split_shift_heals_on_reentry(self):
+        """Eski versiyada bo'lingan smena (cheklar «loc:» da qolgan, joriy
+        smena «srv:») — yangi versiyada smenaga qaytilganda birlashadi."""
+        _, loc = self._offline_day()
+        # Eski xatti-harakat: serverga o'tdi, lekin belgi «loc:» qoldi
+        self.store.set_local_shift(None)
+        self.store.enter_shift_tag("srv:558", fresh=False)
+        self.assertEqual(len(self.store.shift_sales("srv:558")), 3)
+        self.assertEqual(self._report("srv:558").cash_out, 10_000_00)
+
+    def test_new_shift_does_not_take_previous_receipts(self):
+        """Yangi ochilgan smena oldingi smenaning cheklarini olmasin."""
+        _, loc = self._offline_day()
+        self.store.set_local_shift(None)
+        self.store.enter_shift_tag("srv:600", fresh=True)
+        self.assertEqual(len(self.store.shift_sales("srv:600")), 0)
+        self.assertEqual(len(self.store.shift_sales(loc)), 3)
+
+    def test_closed_offline_shift_is_not_merged(self):
+        """Internetsiz yopilib hali serverga yetmagan smena — o'z cheklari
+        bilan qoladi (uning sinxroni shu belgiga qarab kutadi)."""
+        _, loc = self._offline_day()
+        self.backend.finish_shift(None, local_text="X")
+        self.store.enter_shift_tag("srv:700", fresh=False)
+        self.assertEqual(len(self.store.shift_sales(loc)), 3)
+        self.assertEqual(len(self.store.shift_sales("srv:700")), 0)
+
+    def test_receipt_written_with_old_tag_is_merged_before_report(self):
+        """Belgi almashgan lahzada eski belgi bilan yozilgan chek ham
+        hisobotga tushadi."""
+        _, loc = self._offline_day()
+        self.store.retag_shift(loc, "srv:801")
+        self.store.queue("kech-qolgan", _sale("kech-qolgan", cash=1_000_00, tag=loc),
+                         "2026-09-21T17:00:00+00:00")
+        self.store.db.execute("UPDATE outbox SET shift_tag = ? WHERE local_uuid = ?",
+                              (loc, "kech-qolgan"))
+        self.store.merge_shift_tags("srv:801")
+        self.assertEqual(self._report("srv:801").receipts_count, 4)
+
     def test_close_offline_then_sync_in_the_evening(self):
         _, tag = self._offline_day()
         result = self.backend.finish_shift(None, local_text="MAHALLIY HISOBOT")

@@ -888,3 +888,86 @@ class Store:
             "SELECT * FROM outbox WHERE shift_tag = ? ORDER BY created_at DESC LIMIT ?",
             (shift_tag, limit),
         ).fetchall()
+
+    # ------------------------------------------------ smena belgisi (tag)
+    #
+    # Har chek qaysi smenaga tegishli ekani `shift_tag` da: onlayn smena
+    # «srv:<id>», internetsiz ochilgani «loc:<uuid>». Internetsiz ochilgan
+    # smena keyin serverga o'tsa, u «srv:<id>» bo'ladi. Ilgari eski cheklar
+    # «loc:» da qolib ketardi va dastur qayta ochilgach smena ikkiga
+    # bo'linardi: 2026-10-28, unzavod3 #39 — internetsiz smena chekiga
+    # 177 chekdan faqat 13:45 dan keyingi 42 tasi tushdi.
+
+    #: Eslab qolinadigan eski→yangi belgilar soni (har oflayn smena — bitta)
+    TAG_ALIASES_KEEP = 50
+
+    def _tag_aliases(self) -> dict:
+        try:
+            data = json.loads(self.get("shift_tag_aliases") or "{}")
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def retag_shift(self, old: str, new: str) -> int:
+        """`old` belgili cheklar va pul amallarini `new` ga o'tkazadi.
+
+        Bitta tranzaksiyada: joriy belgi ham (agar `old` bo'lsa) yangilanadi
+        va «old → new» eslab qolinadi — parallel yozilib eski belgida qolgan
+        chek bo'lsa, hisobotdan oldin `merge_shift_tags` uni ham olib keladi.
+        Ko'chirilgan cheklar sonini qaytaradi."""
+        if not old or not new or old == new:
+            return 0
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            moved = self.db.execute(
+                "UPDATE outbox SET shift_tag = ? WHERE shift_tag = ?", (new, old)
+            ).rowcount
+            self.db.execute(
+                "UPDATE cash_outbox SET shift_tag = ? WHERE shift_tag = ?", (new, old)
+            )
+            if (self.get("history_shift_tag") or "") == old:
+                self.set("history_shift_tag", new)
+            aliases = self._tag_aliases()
+            aliases.pop(old, None)
+            aliases[old] = new
+            keep = list(aliases.items())[-self.TAG_ALIASES_KEEP:]
+            self.set("shift_tag_aliases", json.dumps(dict(keep)))
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+        return moved
+
+    def merge_shift_tags(self, tag: str) -> int:
+        """Shu smenaning eski belgisi bilan qolib ketgan cheklarni ham
+        shu belgiga yig'adi (hisobot va smenaga kirishdan oldin)."""
+        if not tag:
+            return 0
+        moved = 0
+        for old, new in list(self._tag_aliases().items()):
+            if new == tag and old != tag:
+                moved += self.retag_shift(old, tag)
+        return moved
+
+    def enter_shift_tag(self, new_tag: str, fresh: bool) -> str:
+        """Smenaga kirilganda belgini o'rnatadi.
+
+        `fresh` — smena hozir OCHILDI: oldingi belgi boshqa smenaniki,
+        hech narsa ko'chirilmaydi. Aks holda (dastur qayta ochildi, kassir
+        chiqib-kirdi, yangilanishdan keyin) — o'sha smenaga qaytilyapti.
+        Agar u internetsiz ochilib («loc:»), endi serverda bo'lsa
+        («srv:») — ertalabki cheklar ham shu smenaniki, ularni ko'chiramiz.
+        Internetsiz yopilib hali serverga yetmagan smena (yoki hali
+        serverga o'tmagan mahalliy smena) — tegilmaydi."""
+        prev = self.get("history_shift_tag") or ""
+        if (not fresh and prev != new_tag and prev.startswith("loc:")
+                and new_tag.startswith("srv:")):
+            pending_closed = any(r.get("shift_tag") == prev for r in self.closed_shifts())
+            local = self.get_local_shift() or {}
+            unsynced = bool(local.get("local_uuid") and not local.get("server_id")
+                            and f"loc:{local['local_uuid']}" == prev)
+            if not pending_closed and not unsynced:
+                self.retag_shift(prev, new_tag)
+        self.set("history_shift_tag", new_tag)
+        self.merge_shift_tags(new_tag)
+        return new_tag
