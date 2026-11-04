@@ -10,7 +10,7 @@ Format: KATTA.O'RTA.KICHIK — raqamlar bo'yicha solishtiriladi
 (1.10.0 > 1.9.0), matn bo'yicha emas.
 """
 
-VERSION = "1.18.18"
+VERSION = "1.18.19"
 
 
 def version_key(version: str) -> tuple[int, ...]:

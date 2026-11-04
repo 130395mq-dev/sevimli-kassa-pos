@@ -136,3 +136,32 @@ class ReceiptIntegrityTest(unittest.TestCase):
         quoted = backend.returnable_sales()[0]['items'][0]
         self.assertEqual(quoted['returned_qty'], '1')
         self.assertEqual(refund_total(quoted, 1), 266634)
+
+
+class SalomBannerTest(unittest.TestCase):
+    """Chek pastidagi salom bar: to'g'ri ESC/POS rasm, oq fon, qora yozuv."""
+
+    def _raster(self, data):
+        self.assertEqual(data[:4], b"\x1dv0\x00")
+        width_bytes = data[4] + data[5] * 256
+        height = data[6] + data[7] * 256
+        self.assertEqual(len(data), 8 + width_bytes * height)
+        return width_bytes, height, data[8:]
+
+    def test_banner_fits_paper_and_is_mostly_white(self):
+        from pos.receipt_thanks import THANKS_58, THANKS_80
+        for data, paper_bytes in ((THANKS_80, 72), (THANKS_58, 48)):
+            width_bytes, height, body = self._raster(data)
+            self.assertEqual(width_bytes, paper_bytes)
+            self.assertGreater(height, 60)
+            black = sum(bin(b).count("1") for b in body)
+            # Qora fon emas: qora nuqta 35% dan kam bo'lsin
+            self.assertLess(black / (len(body) * 8), 0.35)
+
+    def test_fallback_text_has_greeting_and_no_reverse_mode(self):
+        from pos import printer
+        self.assertIn("UYDAGILARGA BIZDAN SALOM!", printer.THANK_YOU)
+        self.assertIn("Instagram: @sevimlimarket.uz", printer.THANK_YOU)
+        bar = printer._thank_you_bar(48)
+        self.assertNotIn(printer.REVERSE_ON, bar)
+        self.assertIn(b"UYDAGILARGA BIZDAN SALOM!", bar)

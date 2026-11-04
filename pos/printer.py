@@ -108,11 +108,11 @@ ALIGN_LEFT = ESC + b"a\x00"
 REVERSE_ON = GS + b"B\x01"
 REVERSE_OFF = GS + b"B\x00"
 
-#: Chek pastидagi «rahmat» — uch tilда (oq-qora bar bo'lib chiqadi).
+#: Chek pastidagi salom — oq fonda qora yozuv (siyoh/printer tejaladi).
+#: Rasm (receipt_thanks) bo'lmasa shu matn chiqadi; arxiv faylga ham yoziladi.
 THANK_YOU = [
-    "Xaridingiz uchun rahmat!",
-    "Spasibo za pokupku!",
-    "Thank you for your purchase!",
+    "UYDAGILARGA BIZDAN SALOM!",
+    "Instagram: @sevimlimarket.uz",
 ]
 
 
@@ -135,8 +135,8 @@ def _autumn_bytes(paper: str) -> bytes:
 
 
 def _thanks_bytes(paper: str) -> bytes:
-    """Pastдаги «rahmat» bar — chiroyli shrift bilan chizilgan ESC/POS
-    raster (oq matn, qora fon, uch til). Oldindan tayyorlangan."""
+    """Pastdagi salom bar — chiroyli shrift bilan chizilgan ESC/POS
+    raster (oq fon, qora yozuv). Oldindan tayyorlangan."""
     try:
         from .receipt_thanks import THANKS_58, THANKS_80
         return THANKS_58 if str(paper) == "58" else THANKS_80
@@ -145,29 +145,28 @@ def _thanks_bytes(paper: str) -> bytes:
 
 
 def _thank_you_bar(width: int) -> bytes:
-    """Uch tilдаги rahmatни oq-qora (teskari) bar qilib chiqaradi.
+    """Salomni oddiy qora matn bilan chiqaradi (rasm bo'lmasa — zaxira).
 
-    Har qator butun kenglikка probel bilan to'ldiriladi — shunда teskari
-    rejimда butun qator qora bo'lib, o'rtasида oq matn turadi (uzun bar).
+    Teskari (qora fon) rejim ishlatilmaydi: qora nuqta kam bo'lsin.
+    Tepa va pastda chiziq — yozuv chekning qolganidan ajralib tursin.
     """
     out = bytearray()
     out += ALIGN_LEFT
-    # Tepа-past bo'sh (qora) qator — bar qalinroq ko'rinsin
-    pad = " " * width
-    lines = [pad] + [t.center(width)[:width] for t in THANK_YOU] + [pad]
+    rule = "-" * width
+    lines = [rule] + [t.center(width)[:width] for t in THANK_YOU] + [rule]
     for ln in lines:
-        out += REVERSE_ON + _encode(ln) + REVERSE_OFF + b"\r\n"
+        out += _encode(ln) + b"\r\n"
     return bytes(out)
 
 
 def print_sale(text: str, printer: str = "", paper: str = "80",
                width: int = 48, name: str = "chek") -> tuple[bool, Path]:
-    """Mijoz chekини chiroyli chop etadi: tepада logo, matn, pastда uch
-    tilдаги oq-qora «rahmat» bar. RAW ESC/POS ishlamasа — oddiy matn.
+    """Mijoz chekини chiroyli chop etadi: tepада logo, matn, pastда salom
+    bar (oq fon, qora yozuv). RAW ESC/POS ishlamasа — oddiy matn.
 
     Fayl har holda saqlanadi (chop etilmasа ham chek qoladi).
     """
-    # Arxiv/zaxira uchun matn versiyasi — rahmat oddiy matn bilan.
+    # Arxiv/zaxira uchun matn versiyasi — salom oddiy matn bilan.
     plain = text + "\n" + "\n".join(_center_txt(t, width) for t in THANK_YOU) + "\n"
     path = save(plain, name)
 
@@ -210,7 +209,7 @@ def head_bytes() -> bytes:
 
 def _print_sale_raw(text: str, printer: str, paper: str, width: int,
                     document: str = "Sevimli chek") -> PrintJob:  # pragma: no cover
-    """RAW ESC/POS: logo + matn + oq-qora rahmat bar."""
+    """RAW ESC/POS: logo + matn + salom bar (oq fon, qora yozuv)."""
     name = printer or default_printer()
     if not name:
         raise RuntimeError("Printer tanlanmagan va asosiy printer ham yo'q")
@@ -226,8 +225,8 @@ def _print_sale_raw(text: str, printer: str, paper: str, width: int,
             head += logo + b"\n"
         head += ALIGN_LEFT
 
-    # Pastдаги rahmat — chiroyli shrift (raster). Raster bo'lmasa, oddiy
-    # oq-qora matn bar bilan almashtiramiz (zaxira).
+    # Pastdagi salom — chiroyli shrift (raster). Raster bo'lmasa, oddiy
+    # qora matn bilan almashtiramiz (zaxira).
     thanks = _thanks_bytes(paper)
     if thanks:
         thanks_block = ALIGN_CENTER + thanks + b"\n" + ALIGN_LEFT
