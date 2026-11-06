@@ -21,6 +21,23 @@ from datetime import datetime
 
 from shared.receipt import PaymentLine, ShiftReceipt, _center, _line
 
+from .i18n import tr
+
+
+def parked_close_block(count: int) -> str:
+    """Qoldirilgan chek bor bo'lsa smena YOPILMAYDI (egasi, 2026-11-06).
+
+    Qoldirilgan chek — mijozga hali sotib bo'linmagan savat. Smena yopilib
+    ketsa u keyingi smenaga «osilib» o'tadi: kassir pulni topshirib
+    bo'lgan, chek esa na sotilgan, na bekor qilingan. Shuning uchun avval
+    chek ochilib yakunlanadi (sotiladi) yoki tozalanadi.
+
+    Bo'sh satr — to'siq yo'q; aks holda kassirga ko'rsatiladigan matn.
+    """
+    if not count or count <= 0:
+        return ""
+    return tr("{n} ta qoldirilgan chek bor — smena yopilmaydi.\n\n«Qoldirilgan cheklar»dan ochib, sotuvni yakunlang yoki chekni tozalang. Keyin smenani yoping.").format(n=count)
+
 
 def offline_banner(text: str, width: int) -> str:
     """Internetsiz chizilgan hisobotga ogohlantirish qo'shadi.
