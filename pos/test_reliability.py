@@ -799,3 +799,50 @@ class ReceiptNumberWaitTest(unittest.TestCase):
         self.assertIn("backend.number_wait = 5.0", source)
         self.assertEqual(LiveBackend.number_wait, 0.0)           # fon nusxasi kutmaydi
         self.assertEqual(source.count("number_wait"), 1)
+
+
+class ParkedCloseBlockTest(unittest.TestCase):
+    """Qoldirilgan chek bor bo'lsa smena yopilmaydi (egasi, 2026-11-06)."""
+
+    def test_qoldirilgan_chek_yoq_bolsa_tosiq_yoq(self):
+        from pos.smena import parked_close_block
+        self.assertEqual(parked_close_block(0), "")
+
+    def test_qoldirilgan_chek_bor_bolsa_yopilmaydi(self):
+        from pos.smena import parked_close_block
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(Path(folder) / "kassa.db")
+            first = store.park("Non", 5_000_00, {"lines": []})
+            store.park("Sut", 12_000_00, {"lines": []})
+            text = parked_close_block(store.parked_count())
+            self.assertIn("2 ta qoldirilgan chek bor", text)
+            self.assertIn("smena yopilmaydi", text)
+            self.assertIn("«Qoldirilgan cheklar»", text)
+            # Ochib yakunlangach (unpark) — to'siq qolmaydi
+            store.unpark(first)
+            self.assertIn("1 ta", parked_close_block(store.parked_count()))
+            for row in store.parked():
+                store.unpark(row["id"])
+            self.assertEqual(parked_close_block(store.parked_count()), "")
+            store.db.close()
+
+    def test_ruscha_tarjima_bor(self):
+        from pos import i18n
+        from pos.smena import parked_close_block
+        i18n.set_lang("ru")
+        try:
+            text = parked_close_block(3)
+        finally:
+            i18n.set_lang("uz")
+        self.assertIn("Отложенных чеков: 3", text)
+
+    def test_yopish_tekshiruvdan_keyin_boshlanadi(self):
+        """To'siq smena oynasi va server so'rovidan OLDIN turadi."""
+        source = (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
+        body = source[source.index("    def close_shift() -> None:"):]
+        body = body[:body.index("    backend.close_shift = close_shift")]
+        block = body.index("parked_close_block(store.parked_count())")
+        self.assertLess(block, body.index("backend.flush()"))
+        self.assertLess(block, body.index("CloseShiftDialog(stuck"))
+        self.assertLess(block, body.index("backend.finish_shift("))
+        self.assertIn("open_parked()", body[block:body.index("backend.flush()")])

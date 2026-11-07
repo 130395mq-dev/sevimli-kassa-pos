@@ -1196,7 +1196,20 @@ def main() -> int:
         from shared.receipt import render as render_shift
 
         from . import printer
-        from .smena import build_shift_receipt, offline_banner
+        from .smena import build_shift_receipt, offline_banner, parked_close_block
+
+        # Qoldirilgan chek bor — smena yopilmaydi (egasi, 2026-11-06).
+        # Kassirga o'sha yerning o'zidan «Qoldirilgan cheklar»ni ochish
+        # imkoni beriladi: ochadi → sotadi yoki tozalaydi → keyin yopadi.
+        block = parked_close_block(store.parked_count())
+        if block:
+            box = QMessageBox(QMessageBox.Warning, tr("Smena yopilmadi"), block)
+            open_btn = box.addButton(tr("Qoldirilgan cheklar"), QMessageBox.AcceptRole)
+            box.addButton(tr("Yopish"), QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is open_btn:
+                open_parked()
+            return
 
         # Yopishdan oldin navbatni bo'shatishga urinamiz — internet bo'lsa
         # hisobotni server chizadi va raqam bitta joyda hisoblanadi.

@@ -147,6 +147,7 @@ _RU: dict[str, str] = {
     "RAZMEN PULI (so'm)": "РАЗМЕННЫЕ ДЕНЬГИ (сум)",
     "Smena ochilmadi": "Смена не открыта",
     "Smena yopilmadi": "Смена не закрыта",
+    "{n} ta qoldirilgan chek bor — smena yopilmaydi.\n\n«Qoldirilgan cheklar»dan ochib, sotuvni yakunlang yoki chekni tozalang. Keyin smenani yoping.": "Отложенных чеков: {n} — смена не закрывается.\n\nОткройте их в «Отложенные чеки» и завершите продажу или очистите чек. Затем закройте смену.",
     "Kassadagi naqd pulni sanang va kiriting.":
         "Пересчитайте наличные в кассе и введите.",
     "Smena cheki": "Отчёт по смене",
