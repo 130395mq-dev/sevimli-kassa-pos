@@ -480,11 +480,15 @@ class NewCustomerDialog(BaseDialog):
             ("familiya", "Familiya", "", "fio"),
             ("tel", "Telefon", "+998", "phone"),
             ("karta", "Karta raqami", "", "card"),
+            # Tug'ilgan kun (2026-11-08): kun.oy yetarli, yil ixtiyoriy
+            ("tug", "Tug'ilgan sana (KK.OO yoki KK.OO.YYYY)", "", "birthday"),
         ]
         for key, label, default, req_key in specs:
             star = " *" if req_key in self._required else ""
             self.root.addWidget(_label(tr(label) + star, 13, t.FAINT, bold=True))
             edit = _line_edit(text=default)
+            if key == "tug":
+                edit.setPlaceholderText(tr("masalan 12.05 yoki 12.05.1990"))
             self.fields[key] = edit
             self.root.addWidget(edit)
 
@@ -523,6 +527,17 @@ class NewCustomerDialog(BaseDialog):
         if "card" in self._required and not karta:
             fail("Karta raqami kerak")
             return
+        tug = self.fields["tug"].text().strip()
+        if tug:
+            from ..tugilgan import BirthdayError, normalize
+            try:
+                tug = normalize(tug)
+            except BirthdayError as e:
+                fail(str(e))
+                return
+        elif "birthday" in self._required:
+            fail("Tug'ilgan sana kerak")
+            return
         name = f"{familiya} {ism}".strip()
         self.hint.setStyleSheet(
             f"color:{t.MUTED}; background:transparent; border:none;"
@@ -530,11 +545,76 @@ class NewCustomerDialog(BaseDialog):
         self.hint.setText(tr("Saqlanmoqda…"))
         QApplication.processEvents()
         try:
-            self.created = self._creator(name, tel, karta)
+            self.created = self._creator(name, tel, karta, tug)
         except Exception as e:
             self.hint.setStyleSheet(
                 f"color:{t.DANGER}; background:transparent; border:none;"
             )
+            self.hint.setText(str(e))
+            return
+        self.accept()
+
+
+class BirthdayDialog(BaseDialog):
+    """Karta urilganda mijozning tug'ilgan kuni kiritilmagan bo'lsa chiqadi
+    (egasi, 2026-11-08): kassir mijozdan so'rab shu yerda kiritadi.
+    «Keyinroq» — chekka to'sqinlik qilmaydi, keyingi safar yana so'raladi.
+    """
+
+    def __init__(self, setter, customer, parent=None):
+        super().__init__(tr("Tug'ilgan kuni"), width=560, parent=parent)
+        self._setter = setter
+        self._customer = customer
+        self.updated = None
+
+        who = _label(customer.name, 18, t.INK, bold=True)
+        who.setAlignment(Qt.AlignCenter)
+        self.root.addWidget(who)
+        ask = _label(tr("Bu mijozning tug'ilgan kuni kiritilmagan. "
+                        "Mijozdan so'rang — kun va oy yetarli, yil ixtiyoriy."),
+                     14, t.MUTED)
+        ask.setWordWrap(True)
+        ask.setAlignment(Qt.AlignCenter)
+        self.root.addWidget(ask)
+
+        self.field = _line_edit(placeholder=tr("masalan 12.05 yoki 12.05.1990"))
+        self.field.returnPressed.connect(self._save)
+        self.root.addWidget(self.field)
+
+        self.hint = _label("", 13, t.DANGER)
+        self.hint.setAlignment(Qt.AlignCenter)
+        self.hint.setWordWrap(True)
+        self.root.addWidget(self.hint)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        later = touch_button(tr("Keyinroq"), size=17, height=68, tone="soft")
+        later.clicked.connect(self.reject)
+        save = touch_button(tr("SAQLASH"), size=18, height=68, tone="accent")
+        save.clicked.connect(self._save)
+        row.addWidget(later, 2)
+        row.addWidget(save, 3)
+        self.root.addLayout(row)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.field.setFocus()
+
+    def _save(self) -> None:
+        from ..tugilgan import BirthdayError, normalize
+
+        try:
+            value = normalize(self.field.text())
+        except BirthdayError as e:
+            self.hint.setText(str(e))
+            return
+        self.hint.setStyleSheet(f"color:{t.MUTED}; background:transparent; border:none;")
+        self.hint.setText(tr("Saqlanmoqda…"))
+        QApplication.processEvents()
+        try:
+            self.updated = self._setter(self._customer, value)
+        except Exception as e:  # noqa: BLE001 — server xatosi kassirga ko'rsatiladi
+            self.hint.setStyleSheet(f"color:{t.DANGER}; background:transparent; border:none;")
             self.hint.setText(str(e))
             return
         self.accept()
