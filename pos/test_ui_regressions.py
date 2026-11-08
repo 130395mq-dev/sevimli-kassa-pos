@@ -669,3 +669,168 @@ def tearDownModule():
         widget.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     gc.collect()
+
+
+class TugilganKunTest(unittest.TestCase):
+    """Tug'ilgan kun (egasi, 2026-11-08): karta urilganda ekranda belgi,
+    tug'ilgan kunida tabrik, kun kiritilmagan bo'lsa «kiriting» oynasi;
+    chekda faqat tabrik so'zi, sovg'a ball yo'q."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        from .ui.main_window import MainWindow
+        self.folder = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.folder.name) / "kassa.db")
+        self.store.replace_products(PRODUCTS)
+        self.hub = FakeHub()
+        self.backend = LiveBackend(self.hub, self.store, METHODS)
+        self.window = MainWindow(self.backend)
+        self.window.resize(1024, 768)
+        self.window.show()
+        self.settle()
+
+    def tearDown(self):
+        self.window._search_timer.stop()          # kechikkan qidiruv yopiq bazaga tegmasin
+        self.window._card_ok_timer.stop()
+        self.window._banner_timer.stop()
+        self.window.close()
+        self.window.deleteLater()
+        self.settle()
+        self.store.close()
+        self.folder.cleanup()
+
+    def settle(self):
+        for _ in range(5):
+            self.app.processEvents()
+
+    def customer(self, **kw):
+        from .cart import Customer
+        base = dict(id=7, ms_id="m7", name="Aliyeva Dilnoza", card="7700011", bonus_points=28_674)
+        base.update(kw)
+        return Customer(**base)
+
+    def test_server_javobidan_tugilgan_kun_oqiladi(self):
+        c = LiveBackend._customer({"id": 1, "ms_id": "m", "name": "A", "birthday": "12.05", "is_birthday": True})
+        self.assertEqual((c.birthday, c.is_birthday), ("12.05", True))
+        old = LiveBackend._customer({"id": 1, "ms_id": "m", "name": "A"})          # eski server
+        self.assertEqual((old.birthday, old.is_birthday), ("", False))
+
+    def test_karta_urilganda_qator_yashil_yonadi(self):
+        self.backend.find_customer_by_code = lambda code: self.customer(birthday="12.05")
+        self.window.scan_input.setText("7700011")
+        self.window.on_scan()
+        self.settle()
+        self.assertEqual(self.window.cart.customer.id, 7)
+        self.assertTrue(self.window._card_ok_timer.isActive())
+        self.assertIn("Karta qabul qilindi", self.window.customer_row._cap.text())
+        self.assertIn("Aliyeva Dilnoza", self.window.customer_row._label.text())
+        self.assertFalse(self.window.banner.isVisible())
+        # 4 soniyadan keyin oddiy ko'rinish
+        self.window._card_ok_timer.stop(); self.window.refresh()
+        self.assertEqual(self.window.customer_row._cap.text(), "Mijoz")      # kuni bor — ogohlantirish yo'q
+
+    def test_tugilgan_kunida_belgi_va_tabrik(self):
+        asked = []
+        self.backend.ask_birthday = lambda c: asked.append(c)
+        self.window.attach_customer(self.customer(birthday="08.11", is_birthday=True))
+        self.settle()
+        self.assertTrue(self.window.banner.isVisible())
+        self.assertIn("TUG'ILGAN KUNI", self.window.banner.text())
+        self.assertIn("Aliyeva Dilnoza", self.window.banner.text())
+        self.assertIn("TUG'ILGAN KUNI!", self.window.customer_row._cap.text())
+        self.assertIn("Aliyeva Dilnoza", self.window.customer_row._label.text())
+        self.assertEqual(asked, [])                       # kun bor — so'ralmaydi
+        # Belgi chek yakunlangunicha turadi (timer tugasa ham)
+        self.window._card_ok_timer.stop(); self.window.refresh()
+        self.assertIn("TUG'ILGAN KUNI!", self.window.customer_row._cap.text())
+        # Mijoz olib tashlansa — belgi ketadi
+        self.window.cart.customer = None; self.window.refresh()
+        self.assertEqual(self.window.customer_row._cap.text(), "Mijoz")
+
+    def test_kun_yoq_bolsa_kiritish_soraladi(self):
+        asked = []
+        updated = self.customer(birthday="03.11")
+
+        def ask(c):
+            asked.append(c.id)
+            return updated
+
+        self.backend.ask_birthday = ask
+        self.window.attach_customer(self.customer())
+        self.settle()
+        self.assertEqual(asked, [7])
+        self.assertEqual(self.window.cart.customer.birthday, "03.11")
+        self.window._card_ok_timer.stop(); self.window.refresh()
+        self.assertEqual(self.window.customer_row._cap.text(), "Mijoz")
+
+    def test_keyinroq_desa_belgi_qoladi(self):
+        self.backend.ask_birthday = lambda c: None
+        self.window.attach_customer(self.customer())
+        self.window._card_ok_timer.stop(); self.window.refresh()
+        self.assertEqual(self.window.cart.customer.id, 7)
+        self.assertEqual(self.window.customer_row._cap.text(), "Tug'ilgan kuni yo'q")
+
+    def test_kiritish_oynasi_serverga_yozadi(self):
+        from .ui.dialogs import BirthdayDialog
+        calls = []
+
+        def setter(customer, value):
+            calls.append((customer.id, value))
+            return self.customer(birthday=value)
+
+        d = BirthdayDialog(setter, self.customer(), self.window)
+        d.field.setText("32.05"); d._save()
+        self.assertIn("kun yo'q", d.hint.text()); self.assertEqual(calls, [])
+        d.field.setText("12.5.90"); d._save()
+        self.assertEqual(calls, [(7, "12.05.1990")])
+        self.assertEqual(d.updated.birthday, "12.05.1990")
+        d.deleteLater()
+
+    def test_yangi_mijoz_oynasida_sana(self):
+        from .ui.dialogs import NewCustomerDialog
+        got = []
+
+        def creator(name, phone, card, birthday):
+            got.append((name, phone, card, birthday))
+            return self.customer(name=name, birthday=birthday)
+
+        d = NewCustomerDialog(creator, self.window, required=("fio", "card"))
+        self.assertIn("tug", d.fields)
+        d.fields["ism"].setText("Dilnoza"); d.fields["familiya"].setText("Aliyeva")
+        d.fields["karta"].setText("7700011"); d.fields["tug"].setText("12.13")
+        d._save()
+        self.assertIn("Oy 1 dan 12", d.hint.text()); self.assertEqual(got, [])
+        d.fields["tug"].setText("12.05"); d._save()
+        self.assertEqual(got, [("Aliyeva Dilnoza", "", "7700011", "12.05")])
+        d.deleteLater()
+        # Panel «Tug'ilgan sana majburiy» qilsa — bo'sh qoldirib bo'lmaydi
+        d2 = NewCustomerDialog(creator, self.window, required=("fio", "birthday"))
+        d2.fields["ism"].setText("Dilnoza"); d2._save()
+        self.assertIn("Tug'ilgan sana kerak", d2.hint.text())
+        d2.deleteLater()
+
+    def test_chekda_faqat_tabrik_sozi(self):
+        from datetime import datetime
+        from shared.receipt import SaleItem, SaleReceipt, render_sale as render
+        base = dict(market="Sevimli", point="Shaxar", cashier="Kassir", shift_no=1, number=5,
+                    when=datetime(2026, 11, 8, 12, 0), items=[SaleItem("Non", "1", 500000, 500000)],
+                    gross_total=500000, discount_total=0, net_total=500000,
+                    points_spent=0, points_earned=50, balance_after=28724)
+        plain = render(SaleReceipt(**base), 48)
+        self.assertNotIn("TUG'ILGAN", plain)
+        text = render(SaleReceipt(**base, birthday_name="Aliyeva Dilnoza"), 48)
+        self.assertIn("* TUG'ILGAN KUNINGIZ BILAN! *", text)
+        self.assertIn("ALIYEVA DILNOZA", text)
+        self.assertIn("Sevimli Market jamoasi sizni tabriklaydi", text)
+        self.assertEqual(text.count("Berildi"), 1)              # ball o'zgarmadi — sovg'a yo'q
+        self.assertIn("+50", text)
+        for line in text.splitlines():
+            self.assertLessEqual(len(line), 48, line)
+        narrow = render(SaleReceipt(**base, birthday_name="Abdurahmanov Sherxon"), 32)
+        self.assertIn("TUG'ILGAN KUNINGIZ BILAN!", narrow)
+        for line in narrow.splitlines():
+            self.assertLessEqual(len(line), 32, line)
