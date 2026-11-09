@@ -715,6 +715,24 @@ class TugilganKunTest(unittest.TestCase):
         base.update(kw)
         return Customer(**base)
 
+    def shown_label(self, name: str):
+        """Mijoz qatorida EKRANGA chiqadigan matn: qatorga sig'adi, ism bilan
+        boshlanadi; joy yetsa hech narsa qisqarmaydi, ball sig'sa ko'rinadi.
+        (Shrift platformaga qarab har xil — qoida o'lchov bilan tekshiriladi.)"""
+        from PySide6.QtGui import QFontMetrics
+        self.settle()
+        lab = self.window.customer_row._label
+        fm = QFontMetrics(lab.font())
+        shown, width = lab.shown(), lab.contentsRect().width()
+        self.assertGreater(width, 0)
+        self.assertLessEqual(fm.horizontalAdvance(shown), width, (shown, width))
+        self.assertTrue(shown.startswith(name[:4]), (shown, name))
+        if fm.horizontalAdvance(lab.text()) <= width:
+            self.assertEqual(shown, lab.text())                     # joy yetadi — to'liq
+        if fm.horizontalAdvance(" · 28674 ball") + 60 <= width:
+            self.assertIn("28674 ball", shown)                     # ball doim ko'rinadi
+        return shown
+
     def test_server_javobidan_tugilgan_kun_oqiladi(self):
         c = LiveBackend._customer({"id": 1, "ms_id": "m", "name": "A", "birthday": "12.05", "is_birthday": True})
         self.assertEqual((c.birthday, c.is_birthday), ("12.05", True))
@@ -730,6 +748,7 @@ class TugilganKunTest(unittest.TestCase):
         self.assertTrue(self.window._card_ok_timer.isActive())
         self.assertIn("Karta qabul qilindi", self.window.customer_row._cap.text())
         self.assertIn("Aliyeva Dilnoza", self.window.customer_row._label.text())
+        self.shown_label("Aliyeva Dilnoza")
         self.assertFalse(self.window.banner.isVisible())
         # 4 soniyadan keyin oddiy ko'rinish
         self.window._card_ok_timer.stop(); self.window.refresh()
@@ -745,6 +764,7 @@ class TugilganKunTest(unittest.TestCase):
         self.assertIn("Aliyeva Dilnoza", self.window.banner.text())
         self.assertIn("TUG'ILGAN KUNI!", self.window.customer_row._cap.text())
         self.assertIn("Aliyeva Dilnoza", self.window.customer_row._label.text())
+        self.shown_label("Aliyeva Dilnoza")
         self.assertEqual(asked, [])                       # kun bor — so'ralmaydi
         # Belgi chek yakunlangunicha turadi (timer tugasa ham)
         self.window._card_ok_timer.stop(); self.window.refresh()
@@ -778,17 +798,21 @@ class TugilganKunTest(unittest.TestCase):
 
     def test_uzun_ism_qatorga_sigadi(self):
         """Yorliq uzun («…to'ldiring») + uzun ism + ball + daraja — 1024 da
-        qatordan chiqib ketmaydi: ism «…» bilan qisqaradi, ball ko'rinadi."""
+        qatordan chiqib ketmaydi: ism «…» bilan qisqaradi, ball ko'rinadi,
+        chap yorliq to'liq qoladi."""
         self.backend.ask_birthday = lambda c: None
         self.window.attach_customer(self.customer(
             name="Abdurahmanova Gulnorabonu Baxtiyorovna", accumulation_discount=5))
-        self.window._card_ok_timer.stop(); self.window.refresh(); self.settle()
+        self.window._card_ok_timer.stop(); self.window.refresh()
+        shown = self.shown_label("Abdurahmanova Gulnorabonu Baxtiyorovna")
+        self.assertIn("…", shown)
         row = self.window.customer_row
-        need = row._cap.sizeHint().width() + row._label.sizeHint().width() + 40 + 12   # chetlar + oraliq
-        self.assertLessEqual(need, row.width(), (row._cap.text(), row._label.text()))
-        self.assertIn("…", row._label.text())
-        self.assertIn("28674 ball", row._label.text())
-        self.assertTrue(row._label.text().startswith("Abdurahman"))
+        self.assertEqual(row._cap.text(), "Tug'ilgan kun joyini to'ldiring")
+        self.assertGreaterEqual(row._cap.width(), row._cap.sizeHint().width())   # yorliq qisqarmagan
+        self.assertLessEqual(row._cap.width() + row._label.width() + 40 + 12, row.width() + 1)
+        # To'liq matn kodga ko'rinadi (qisqartirilmagan)
+        self.assertIn("Abdurahmanova Gulnorabonu Baxtiyorovna", row._label.text())
+        self.assertIn("daraja 5%", row._label.text())
 
     def test_kiritish_oynasi_serverga_yozadi(self):
         from .ui.dialogs import BirthdayDialog
