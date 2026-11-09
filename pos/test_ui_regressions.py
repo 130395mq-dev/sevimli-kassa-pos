@@ -725,8 +725,12 @@ class TugilganKunTest(unittest.TestCase):
         fm = QFontMetrics(lab.font())
         shown, width = lab.shown(), lab.contentsRect().width()
         self.assertGreater(width, 0)
-        self.assertLessEqual(fm.horizontalAdvance(shown), width, (shown, width))
-        self.assertTrue(shown.startswith(name[:4]), (shown, name))
+        # Windows offscreen runner'da shrift yo'q — har harf kvadrat (13/16 px),
+        # yorliq qatorni to'ldiradi; eng kam «X…» (40 px) chegarasi saqlanadi.
+        self.assertLessEqual(fm.horizontalAdvance(shown), max(width, 40) + 2, (shown, width))
+        self.assertTrue(shown.startswith(name[:1]), (shown, name))
+        if fm.horizontalAdvance(name[:4] + "…") <= width:
+            self.assertTrue(shown.startswith(name[:4]), (shown, name))
         if fm.horizontalAdvance(lab.text()) <= width:
             self.assertEqual(shown, lab.text())                     # joy yetadi — to'liq
         if fm.horizontalAdvance(" · 28674 ball") + 60 <= width:
