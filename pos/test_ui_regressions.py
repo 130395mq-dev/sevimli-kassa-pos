@@ -688,7 +688,9 @@ class TugilganKunTest(unittest.TestCase):
         self.store.replace_products(PRODUCTS)
         self.hub = FakeHub()
         self.backend = LiveBackend(self.hub, self.store, METHODS)
-        self.window = MainWindow(self.backend)
+        from .ui import theme
+        # Haqiqiy 1024×768 kassa: chek paneli 462 px (offscreen «ekran» 410 beradi)
+        self.window = MainWindow(self.backend, receipt_width=theme.receipt_width(1024))
         self.window.resize(1024, 768)
         self.window.show()
         self.settle()
@@ -772,7 +774,21 @@ class TugilganKunTest(unittest.TestCase):
         self.window.attach_customer(self.customer())
         self.window._card_ok_timer.stop(); self.window.refresh()
         self.assertEqual(self.window.cart.customer.id, 7)
-        self.assertEqual(self.window.customer_row._cap.text(), "Tug'ilgan kuni yo'q")
+        self.assertEqual(self.window.customer_row._cap.text(), "Tug'ilgan kun joyini to'ldiring")
+
+    def test_uzun_ism_qatorga_sigadi(self):
+        """Yorliq uzun («…to'ldiring») + uzun ism + ball + daraja — 1024 da
+        qatordan chiqib ketmaydi: ism «…» bilan qisqaradi, ball ko'rinadi."""
+        self.backend.ask_birthday = lambda c: None
+        self.window.attach_customer(self.customer(
+            name="Abdurahmanova Gulnorabonu Baxtiyorovna", accumulation_discount=5))
+        self.window._card_ok_timer.stop(); self.window.refresh(); self.settle()
+        row = self.window.customer_row
+        need = row._cap.sizeHint().width() + row._label.sizeHint().width() + 40 + 12   # chetlar + oraliq
+        self.assertLessEqual(need, row.width(), (row._cap.text(), row._label.text()))
+        self.assertIn("…", row._label.text())
+        self.assertIn("28674 ball", row._label.text())
+        self.assertTrue(row._label.text().startswith("Abdurahman"))
 
     def test_kiritish_oynasi_serverga_yozadi(self):
         from .ui.dialogs import BirthdayDialog
