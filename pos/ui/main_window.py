@@ -1446,13 +1446,15 @@ class MainWindow(QMainWindow):
             f"color: {ink}; background: transparent; border: none;"
             + (" font-weight: 700;" if (birthday_now or card_ok) else "")
         )
-        # Chap yorliq — holat: «Mijoz» / «✓ Karta qabul qilindi» / tug'ilgan kun
+        # Chap yorliq — holat: «Mijoz» / «✓ Karta qabul qilindi» / tug'ilgan kun.
+        # Kun kiritilmagan bo'lsa kassirga ko'rsatma: «Tug'ilgan kun joyini
+        # to'ldiring» (egasi, 2026-11-09 — «yo'q» emas, «to'ldiring» chiqsin).
         if birthday_now:
             cap, cap_ink = tr("★ TUG'ILGAN KUNI!"), "#713F12"
         elif card_ok:
             cap, cap_ink = tr("✓ Karta qabul qilindi"), t.ACCENT_DARK
         elif has_customer and not getattr(self.cart.customer, "birthday", ""):
-            cap, cap_ink = tr("Tug'ilgan kuni yo'q"), t.WARN
+            cap, cap_ink = tr("Tug'ilgan kun joyini to'ldiring"), t.WARN
         else:
             cap, cap_ink = tr("Mijoz"), t.MUTED
         self.customer_row._cap.setText(cap)
@@ -1527,13 +1529,32 @@ class MainWindow(QMainWindow):
 
         if self.cart.customer:
             c = self.cart.customer
-            name = c.name if len(c.name) <= 26 else c.name[:25].rstrip() + "…"
-            bits = [name]
+            parts = []
             if c.bonus_points:
-                bits.append(f"{c.bonus_points} ball")
+                parts.append(f"{c.bonus_points} ball")
             if c.discount_percent:
-                bits.append(f"daraja {c.discount_percent:g}%")
-            self.customer_row._label.setText("   ·   ".join(bits))
+                parts.append(f"daraja {c.discount_percent:g}%")
+            # Qatorga sig'masa: avval oraliqlar torayadi, keyin «daraja»
+            # tushib qoladi (ismga kamida ~110 px qolsin), oxirida ISM
+            # qisqartiriladi («…») — ball doim ko'rinadi (to'liq ism pastki
+            # holat qatorida «Mijoz: …»). Chap yorliq uzun bo'lganda ham
+            # («Tug'ilgan kun joyini to'ldiring») matn o'ngdan kesilmaydi.
+            lab, cap_w = self.customer_row._label, self.customer_row._cap.sizeHint().width()
+            avail = self.customer_row.width() - 40 - cap_w - 12     # chetlar + oraliq
+            name, tail = c.name, "".join("   ·   " + p for p in parts)
+            if avail > 120:
+                fm = lab.fontMetrics()
+                if fm.horizontalAdvance(name + tail) > avail:
+                    cands = [("   ·   ", 2), (" · ", 2), (" · ", 1)]
+                    fits = [t_ for t_ in ("".join(sep + p for p in parts[:keep]) for sep, keep in cands)
+                            if fm.horizontalAdvance(t_) + 60 <= avail]
+                    roomy = [t_ for t_ in fits if fm.horizontalAdvance(t_) + 110 <= avail]
+                    tail = (roomy or fits or [""])[0]
+                    name = fm.elidedText(name, Qt.ElideRight,
+                                         max(avail - fm.horizontalAdvance(tail), 60))
+            elif len(name) > 26:
+                name = name[:25].rstrip() + "…"
+            lab.setText(name + tail)
         else:
             self.customer_row._label.setText(tr("tanlash uchun bosing"))
         self.cart_changed.emit()

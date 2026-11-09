@@ -559,10 +559,12 @@ class BirthdayDialog(BaseDialog):
     """Karta urilganda mijozning tug'ilgan kuni kiritilmagan bo'lsa chiqadi
     (egasi, 2026-11-08): kassir mijozdan so'rab shu yerda kiritadi.
     «Keyinroq» — chekka to'sqinlik qilmaydi, keyingi safar yana so'raladi.
+    Sarlavha — kassirga ko'rsatma «Tug'ilgan kun joyini to'ldiring»
+    (egasi, 2026-11-09).
     """
 
     def __init__(self, setter, customer, parent=None):
-        super().__init__(tr("Tug'ilgan kuni"), width=560, parent=parent)
+        super().__init__(tr("Tug'ilgan kun joyini to'ldiring"), width=560, parent=parent)
         self._setter = setter
         self._customer = customer
         self.updated = None
