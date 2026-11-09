@@ -144,6 +144,76 @@ class _WrapLabel(QLabel):
             y += fm.height()
 
 
+class _FitLabel(QLabel):
+    """Mijoz qatoridagi yozuv (ism · ball · daraja) — o'ngga tekis, BOR JOYGA
+    sig'adi. Sig'masa: oraliqlar torayadi → «daraja» tushib qoladi (ismga
+    kamida ~110 px qolsin) → ism «…» bilan qisqaradi; ball doim ko'rinadi
+    (to'liq ism pastki holat qatorida «Mijoz: …»). Oddiy QLabel qatorni
+    cho'zib, matn o'ngdan kesilib qolardi — ayniqsa chap yorliq uzun
+    bo'lganda («Tug'ilgan kun joyini to'ldiring»). O'lchov paint vaqtida,
+    label'ning HAQIQIY kengligi va o'z shrifti bilan — platformaga bog'liq emas.
+    """
+
+    def __init__(self, text: str = "", size: int = 16, color: str = t.INK, parent=None):
+        super().__init__(parent)
+        self._name, self._parts = text, []
+        self._color = QColor(color)
+        font = QFont()
+        font.setPixelSize(size)
+        self.setFont(font)
+        self.setStyleSheet("background: transparent; border: none;")
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
+    def set_parts(self, name: str, parts: list[str]) -> None:
+        self._name, self._parts = name, list(parts)
+        self.updateGeometry()
+        self.update()
+
+    def setText(self, text: str) -> None:            # oddiy matn («tanlash uchun bosing»)
+        self.set_parts(text, [])
+
+    def text(self) -> str:
+        """To'liq matn (qisqartirilmagan)."""
+        return self._name + "".join("   ·   " + p for p in self._parts)
+
+    def set_ink(self, color: str, bold: bool = False) -> None:
+        self._color = QColor(color)
+        font = self.font()
+        font.setBold(bold)
+        self.setFont(font)
+        self.updateGeometry()
+        self.update()
+
+    def shown(self, width: int | None = None) -> str:
+        """Berilgan (yoki joriy) kenglikda ekranga chiqadigan matn."""
+        fm = QFontMetrics(self.font())
+        w = self.contentsRect().width() if width is None else width
+        full = self.text()
+        if w <= 0 or fm.horizontalAdvance(full) <= w:
+            return full
+        tails = ["".join(sep + p for p in self._parts[:keep])
+                 for sep, keep in (("   ·   ", 2), (" · ", 2), (" · ", 1))]
+        fits = [x for x in tails if fm.horizontalAdvance(x) + 60 <= w]
+        roomy = [x for x in fits if fm.horizontalAdvance(x) + 110 <= w]
+        tail = (roomy or fits or [""])[0]
+        return fm.elidedText(self._name, Qt.ElideRight,
+                             max(w - fm.horizontalAdvance(tail), 40)) + tail
+
+    def sizeHint(self) -> QSize:
+        fm = QFontMetrics(self.font())
+        return QSize(fm.horizontalAdvance(self.text()) + 2, fm.height())
+
+    def minimumSizeHint(self) -> QSize:                 # layout qisqartira oladi
+        return QSize(0, QFontMetrics(self.font()).height())
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.setFont(self.font())
+        painter.setPen(self._color)
+        painter.drawText(self.contentsRect(), Qt.AlignRight | Qt.AlignVCenter, self.shown())
+
+
 # Nozik skrollbar — o'q tugmalari, burchak qutichasi va gorizontal bar
 # ko'rinmaydi. Sensorli ekranда chiroyliroq va toza.
 # Skrollbar BARMOQ uchun: 9 px li shaffof chiziqni sensorli ekranda
@@ -778,9 +848,10 @@ class MainWindow(QMainWindow):
         # Chapда «Mijoz» yorlig'i, o'ngда qiymat/ishorat — labeled field kabi.
         cap = _label(tr("Mijoz"), 13, t.MUTED)
         row.addWidget(cap)
-        row.addStretch(1)
-        label = _label(text, 16, t.INK)
-        row.addWidget(label)
+        row.addSpacing(12)
+        # O'ngdagi yozuv bor joyga sig'adi (qisqaradi), chap yorliq to'liq qoladi
+        label = _FitLabel(text, 16, t.INK)
+        row.addWidget(label, 1)
         w.mousePressEvent = lambda _e: handler()
         w._label = label
         w._cap = cap
@@ -1442,10 +1513,7 @@ class MainWindow(QMainWindow):
         self.customer_row.setStyleSheet(
             f"background: {row_bg}; border-top: 1px solid {t.LINE};"
         )
-        self.customer_row._label.setStyleSheet(
-            f"color: {ink}; background: transparent; border: none;"
-            + (" font-weight: 700;" if (birthday_now or card_ok) else "")
-        )
+        self.customer_row._label.set_ink(ink, bold=(birthday_now or card_ok))
         # Chap yorliq — holat: «Mijoz» / «✓ Karta qabul qilindi» / tug'ilgan kun.
         # Kun kiritilmagan bo'lsa kassirga ko'rsatma: «Tug'ilgan kun joyini
         # to'ldiring» (egasi, 2026-11-09 — «yo'q» emas, «to'ldiring» chiqsin).
@@ -1534,27 +1602,8 @@ class MainWindow(QMainWindow):
                 parts.append(f"{c.bonus_points} ball")
             if c.discount_percent:
                 parts.append(f"daraja {c.discount_percent:g}%")
-            # Qatorga sig'masa: avval oraliqlar torayadi, keyin «daraja»
-            # tushib qoladi (ismga kamida ~110 px qolsin), oxirida ISM
-            # qisqartiriladi («…») — ball doim ko'rinadi (to'liq ism pastki
-            # holat qatorida «Mijoz: …»). Chap yorliq uzun bo'lganda ham
-            # («Tug'ilgan kun joyini to'ldiring») matn o'ngdan kesilmaydi.
-            lab, cap_w = self.customer_row._label, self.customer_row._cap.sizeHint().width()
-            avail = self.customer_row.width() - 40 - cap_w - 12     # chetlar + oraliq
-            name, tail = c.name, "".join("   ·   " + p for p in parts)
-            if avail > 120:
-                fm = lab.fontMetrics()
-                if fm.horizontalAdvance(name + tail) > avail:
-                    cands = [("   ·   ", 2), (" · ", 2), (" · ", 1)]
-                    fits = [t_ for t_ in ("".join(sep + p for p in parts[:keep]) for sep, keep in cands)
-                            if fm.horizontalAdvance(t_) + 60 <= avail]
-                    roomy = [t_ for t_ in fits if fm.horizontalAdvance(t_) + 110 <= avail]
-                    tail = (roomy or fits or [""])[0]
-                    name = fm.elidedText(name, Qt.ElideRight,
-                                         max(avail - fm.horizontalAdvance(tail), 60))
-            elif len(name) > 26:
-                name = name[:25].rstrip() + "…"
-            lab.setText(name + tail)
+            # Sig'masa _FitLabel o'zi qisqartiradi (ism «…», ball qoladi)
+            self.customer_row._label.set_parts(c.name, parts)
         else:
             self.customer_row._label.setText(tr("tanlash uchun bosing"))
         self.cart_changed.emit()
