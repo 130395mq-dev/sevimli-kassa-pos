@@ -77,6 +77,10 @@ class Customer:
     bonus_points: int = 0
     accumulation_discount: float = 0.0
     personal_discount: float = 0.0
+    #: Tug'ilgan kuni «12.05» yoki «12.05.1990»; kiritilmagan — "".
+    birthday: str = ""
+    #: Bugun tug'ilgan kunimi — SERVER sanasi bo'yicha (kassa soati adashsa ham).
+    is_birthday: bool = False
 
     @property
     def discount_percent(self) -> float:

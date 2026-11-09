@@ -334,6 +334,10 @@ class SaleReceipt:
     points_earned: int = 0    # shu chekda berilgan ball (dona)
     balance_after: int | None = None  # savdodan keyingi balans (mijoz bo'lsa)
 
+    # Tug'ilgan kun tabrigi (2026-11-08): mijozning tug'ilgan kunida ismi
+    # shu yerga tushadi va chekda tabrik so'zi chiqadi. Bo'sh — tabrik yo'q.
+    birthday_name: str = ""
+
 
 def _wrap(text: str, w: int) -> list[str]:
     """Uzun nomni qog'oz kengligiga sig'diradi."""
@@ -398,7 +402,37 @@ def render_sale(r: SaleReceipt, width: int = WIDE) -> str:
                   w, indent=0))
 
     add(_line("=", w))
+
+    # Tug'ilgan kun — faqat tabrik so'zi, sovg'a ball yo'q (egasi, 2026-11-08).
+    if r.birthday_name:
+        add("")
+        for line in birthday_lines(r.birthday_name, w):
+            add(line)
+        add("")
+        add(_line("=", w))
+
     # «Xaridingiz uchun rahmat» (3 tilda) printerда oq-qora bar bo'lib
     # chiqadi — u shu yerда matn sifatida yozilmaydi (printer qo'shadi).
     add("")
     return "\n".join(out)
+
+
+def _center_wrap(text: str, w: int) -> list[str]:
+    """So'zma-so'z sig'diradi va har qatorni o'rtaga oladi."""
+    lines, cur = [], ""
+    for word in text.split():
+        if cur and len(cur) + 1 + len(word) > w:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = f"{cur} {word}".strip()
+    if cur:
+        lines.append(cur)
+    return [_center(line, w) for line in lines]
+
+
+def birthday_lines(name: str, w: int) -> list[str]:
+    """Chekdagi tabrik: 80 mm da 3 qator, 58 mm da so'zlar o'raladi."""
+    return (_center_wrap("* TUG'ILGAN KUNINGIZ BILAN! *", w)
+            + _center_wrap(name.upper(), w)
+            + _center_wrap("Sevimli Market jamoasi sizni tabriklaydi", w))

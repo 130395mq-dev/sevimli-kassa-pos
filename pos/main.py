@@ -273,6 +273,7 @@ def main() -> int:
             QMessageBox.warning(None, tr("Katalog"), f"Katalog yuklanmadi: {e}")
 
     from .ui.dialogs import (
+        BirthdayDialog,
         CashDialog,
         CloseShiftDialog,
         CustomerDialog,
@@ -417,6 +418,10 @@ def main() -> int:
             points_spent=spent,
             points_earned=earned,
             balance_after=balance_after,
+            # Tug'ilgan kuni — chekda faqat tabrik so'zi (egasi, 2026-11-08)
+            birthday_name=(cart.customer.name
+                           if cart.customer and getattr(cart.customer, "is_birthday", False)
+                           else ""),
         )
         # Kenglik — foydalanuvchi tanlagan qog'oz o'lchamiga qarab (80/58mm)
         text = render_sale(receipt, config.receipt_width)
@@ -767,8 +772,17 @@ def main() -> int:
         dialog = PointsDialog(balance, max_balls, current, window)
         return dialog.balls if dialog.exec() == PointsDialog.Accepted else None
 
+    def ask_birthday(customer):
+        """Karta urildi, tug'ilgan kuni yo'q — kassir shu yerda kiritadi
+        (egasi, 2026-11-08). Qaytaradi: yangilangan mijoz yoki None (keyinroq)."""
+        dialog = BirthdayDialog(backend.set_customer_birthday, customer, window)
+        if dialog.exec() != BirthdayDialog.Accepted:
+            return None
+        return dialog.updated
+
     backend.quantity_asker = ask_quantity
     backend.customer_asker = ask_customer
+    backend.ask_birthday = ask_birthday
     backend.discount_asker = ask_discount
     backend.points_asker = ask_points
 

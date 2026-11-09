@@ -144,6 +144,76 @@ class _WrapLabel(QLabel):
             y += fm.height()
 
 
+class _FitLabel(QLabel):
+    """Mijoz qatoridagi yozuv (ism · ball · daraja) — o'ngga tekis, BOR JOYGA
+    sig'adi. Sig'masa: oraliqlar torayadi → «daraja» tushib qoladi (ismga
+    kamida ~110 px qolsin) → ism «…» bilan qisqaradi; ball doim ko'rinadi
+    (to'liq ism pastki holat qatorida «Mijoz: …»). Oddiy QLabel qatorni
+    cho'zib, matn o'ngdan kesilib qolardi — ayniqsa chap yorliq uzun
+    bo'lganda («Tug'ilgan kun joyini to'ldiring»). O'lchov paint vaqtida,
+    label'ning HAQIQIY kengligi va o'z shrifti bilan — platformaga bog'liq emas.
+    """
+
+    def __init__(self, text: str = "", size: int = 16, color: str = t.INK, parent=None):
+        super().__init__(parent)
+        self._name, self._parts = text, []
+        self._color = QColor(color)
+        font = QFont()
+        font.setPixelSize(size)
+        self.setFont(font)
+        self.setStyleSheet("background: transparent; border: none;")
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
+    def set_parts(self, name: str, parts: list[str]) -> None:
+        self._name, self._parts = name, list(parts)
+        self.updateGeometry()
+        self.update()
+
+    def setText(self, text: str) -> None:            # oddiy matn («tanlash uchun bosing»)
+        self.set_parts(text, [])
+
+    def text(self) -> str:
+        """To'liq matn (qisqartirilmagan)."""
+        return self._name + "".join("   ·   " + p for p in self._parts)
+
+    def set_ink(self, color: str, bold: bool = False) -> None:
+        self._color = QColor(color)
+        font = self.font()
+        font.setBold(bold)
+        self.setFont(font)
+        self.updateGeometry()
+        self.update()
+
+    def shown(self, width: int | None = None) -> str:
+        """Berilgan (yoki joriy) kenglikda ekranga chiqadigan matn."""
+        fm = QFontMetrics(self.font())
+        w = self.contentsRect().width() if width is None else width
+        full = self.text()
+        if w <= 0 or fm.horizontalAdvance(full) <= w:
+            return full
+        tails = ["".join(sep + p for p in self._parts[:keep])
+                 for sep, keep in (("   ·   ", 2), (" · ", 2), (" · ", 1))]
+        fits = [x for x in tails if fm.horizontalAdvance(x) + 60 <= w]
+        roomy = [x for x in fits if fm.horizontalAdvance(x) + 110 <= w]
+        tail = (roomy or fits or [""])[0]
+        return fm.elidedText(self._name, Qt.ElideRight,
+                             max(w - fm.horizontalAdvance(tail), 40)) + tail
+
+    def sizeHint(self) -> QSize:
+        fm = QFontMetrics(self.font())
+        return QSize(fm.horizontalAdvance(self.text()) + 2, fm.height())
+
+    def minimumSizeHint(self) -> QSize:                 # layout qisqartira oladi
+        return QSize(0, QFontMetrics(self.font()).height())
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.setFont(self.font())
+        painter.setPen(self._color)
+        painter.drawText(self.contentsRect(), Qt.AlignRight | Qt.AlignVCenter, self.shown())
+
+
 # Nozik skrollbar — o'q tugmalari, burchak qutichasi va gorizontal bar
 # ko'rinmaydi. Sensorli ekranда chiroyliroq va toza.
 # Skrollbar BARMOQ uchun: 9 px li shaffof chiziqni sensorli ekranda
@@ -427,6 +497,13 @@ class MainWindow(QMainWindow):
         self._search_timer.setInterval(180)
         self._search_timer.timeout.connect(self._run_search)
 
+        # Karta urilganda mijoz qatori bir necha soniya YASHIL yonadi —
+        # kassir karta o'qilganini bir qarashda ko'radi (egasi, 2026-11-08).
+        self._card_ok_timer = QTimer(self)
+        self._card_ok_timer.setSingleShot(True)
+        self._card_ok_timer.setInterval(4000)
+        self._card_ok_timer.timeout.connect(self.refresh)
+
         # Markaziy widget — «shimol yog'dusi» fon (tun rejimi). UI shu
         # ustiga joylashadi; layout/joylashuv o'zgarmaydi. animated_bg
         # o'chiq bo'lsa — chiroyli statik fon qoladi.
@@ -467,6 +544,20 @@ class MainWindow(QMainWindow):
         )
         self.printer_status.hide()
         root.addWidget(self.printer_status)
+
+        # Tug'ilgan kun — ekran o'rtasida katta tabrik (bir necha soniya).
+        # Kassir ko'rib, mijozni og'zaki tabriklaydi (egasi, 2026-11-08).
+        self.banner = QLabel(central)
+        self.banner.setAlignment(Qt.AlignCenter)
+        self.banner.setWordWrap(True)
+        self.banner.setStyleSheet(
+            f"background: {t.ACCENT}; color: {t.ON_ACCENT}; border-radius: 18px;"
+            " padding: 26px 34px; font-size: 26px; font-weight: 700;"
+        )
+        self.banner.hide()
+        self._banner_timer = QTimer(self)
+        self._banner_timer.setSingleShot(True)
+        self._banner_timer.timeout.connect(self.banner.hide)
 
         body = QHBoxLayout()
         body.setContentsMargins(14, 14, 14, 14)
@@ -757,9 +848,10 @@ class MainWindow(QMainWindow):
         # Chapда «Mijoz» yorlig'i, o'ngда qiymat/ishorat — labeled field kabi.
         cap = _label(tr("Mijoz"), 13, t.MUTED)
         row.addWidget(cap)
-        row.addStretch(1)
-        label = _label(text, 16, t.INK)
-        row.addWidget(label)
+        row.addSpacing(12)
+        # O'ngdagi yozuv bor joyga sig'adi (qisqaradi), chap yorliq to'liq qoladi
+        label = _FitLabel(text, 16, t.INK)
+        row.addWidget(label, 1)
         w.mousePressEvent = lambda _e: handler()
         w._label = label
         w._cap = cap
@@ -941,9 +1033,7 @@ class MainWindow(QMainWindow):
         finder = getattr(self.backend, "find_customer_by_code", None)
         customer = finder(code) if finder else None
         if customer is not None:
-            self.cart.customer = customer
-            self.refresh()
-            self.flash(f"Mijoz: {customer.name}")
+            self.attach_customer(customer)
             return
 
         self.flash(tr("Tovar topilmadi"))
@@ -1106,7 +1196,54 @@ class MainWindow(QMainWindow):
         # (balans boshqa), nolga tushiramiz.
         if new_id != old_id:
             self.cart.set_points_amount(0)
+        if result is not None and new_id != old_id:
+            self.attach_customer(result)
+        else:
+            self.refresh()
+
+    def attach_customer(self, customer) -> None:
+        """Karta urildi (yoki mijoz tanlandi): ekranda BELGI chiqadi.
+
+        1) Mijoz qatori 4 soniya yashil — «Karta qabul qilindi».
+        2) Tug'ilgan kuni bo'lsa — ekran o'rtasida katta tabrik, qatorda
+           «BUGUN TUG'ILGAN KUNI!» chek yakunlangunicha turadi; chekda
+           tabrik so'zi chiqadi (main.py). Kassir og'zaki tabriklaydi.
+        3) Tug'ilgan kuni kiritilmagan bo'lsa — darhol «kiriting» oynasi
+           (egasi, 2026-11-08): kassir mijozdan so'rab kiritadi yoki
+           «Keyinroq». Chekka to'sqinlik qilmaydi.
+        """
+        self.cart.customer = customer
+        self._card_ok_timer.start()
         self.refresh()
+        self.flash(f"Mijoz: {customer.name}")
+        if getattr(customer, "is_birthday", False):
+            self.show_banner(tr("★ BUGUN TUG'ILGAN KUNI! ★") + "\n" + customer.name
+                             + "\n" + tr("Mijozni tabriklang"))
+            return
+        if not getattr(customer, "birthday", ""):
+            asker = getattr(self.backend, "ask_birthday", None)
+            if callable(asker):
+                updated = asker(customer)
+                if updated is not None and self.cart.customer is customer:
+                    self.cart.customer = updated
+                    self.refresh()
+                    if getattr(updated, "is_birthday", False):
+                        self.show_banner(tr("★ BUGUN TUG'ILGAN KUNI! ★") + "\n" + updated.name
+                                         + "\n" + tr("Mijozni tabriklang"))
+
+    def show_banner(self, text: str, ms: int = 5000) -> None:
+        """Ekran o'rtasida katta xabar — ms dan keyin o'zi yo'qoladi."""
+        self.banner.setText(text)
+        self.banner.adjustSize()
+        host = self.banner.parentWidget()
+        w = min(max(self.banner.sizeHint().width() + 40, 420), max(host.width() - 80, 420))
+        self.banner.setFixedWidth(w)
+        self.banner.adjustSize()
+        h = self.banner.sizeHint().height()
+        self.banner.move(max((host.width() - w) // 2, 0), max((host.height() - h) // 3, 0))
+        self.banner.raise_()
+        self.banner.show()
+        self._banner_timer.start(ms)
 
     def on_points(self) -> None:
         """Ball ishlatish — mijozning ballaridan chek to'loviga."""
@@ -1363,9 +1500,35 @@ class MainWindow(QMainWindow):
         # Mijoz tanlanmagan bo'lsa — «tanlash uchun bosing» (accent, ishorat);
         # tanlangan bo'lsa — ism + ball (to'q).
         has_customer = bool(self.cart.customer)
-        self.customer_row._label.setStyleSheet(
-            f"color: {t.INK if has_customer else t.ACCENT};"
-            " background: transparent; border: none;"
+        birthday_now = bool(has_customer and getattr(self.cart.customer, "is_birthday", False))
+        card_ok = has_customer and self._card_ok_timer.isActive()
+        # Qator foni: tug'ilgan kunida sariq, karta endi urilgan bo'lsa yashil,
+        # aks holda oq. Yozuv rangi ham shunga mos.
+        if birthday_now:
+            row_bg, ink = "#FFF1CF", "#713F12"
+        elif card_ok:
+            row_bg, ink = t.ACCENT_PALE, t.ACCENT_DARK
+        else:
+            row_bg, ink = t.BG, (t.INK if has_customer else t.ACCENT)
+        self.customer_row.setStyleSheet(
+            f"background: {row_bg}; border-top: 1px solid {t.LINE};"
+        )
+        self.customer_row._label.set_ink(ink, bold=(birthday_now or card_ok))
+        # Chap yorliq — holat: «Mijoz» / «✓ Karta qabul qilindi» / tug'ilgan kun.
+        # Kun kiritilmagan bo'lsa kassirga ko'rsatma: «Tug'ilgan kun joyini
+        # to'ldiring» (egasi, 2026-11-09 — «yo'q» emas, «to'ldiring» chiqsin).
+        if birthday_now:
+            cap, cap_ink = tr("★ TUG'ILGAN KUNI!"), "#713F12"
+        elif card_ok:
+            cap, cap_ink = tr("✓ Karta qabul qilindi"), t.ACCENT_DARK
+        elif has_customer and not getattr(self.cart.customer, "birthday", ""):
+            cap, cap_ink = tr("Tug'ilgan kun joyini to'ldiring"), t.WARN
+        else:
+            cap, cap_ink = tr("Mijoz"), t.MUTED
+        self.customer_row._cap.setText(cap)
+        self.customer_row._cap.setStyleSheet(
+            f"color: {cap_ink}; background: transparent; border: none;"
+            + (" font-weight: 700;" if (birthday_now or card_ok) else "")
         )
 
         self.receipt_list.clear()
@@ -1434,12 +1597,13 @@ class MainWindow(QMainWindow):
 
         if self.cart.customer:
             c = self.cart.customer
-            bits = [c.name]
+            parts = []
             if c.bonus_points:
-                bits.append(f"{c.bonus_points} ball")
+                parts.append(f"{c.bonus_points} ball")
             if c.discount_percent:
-                bits.append(f"daraja {c.discount_percent:g}%")
-            self.customer_row._label.setText("   ·   ".join(bits))
+                parts.append(f"daraja {c.discount_percent:g}%")
+            # Sig'masa _FitLabel o'zi qisqartiradi (ism «…», ball qoladi)
+            self.customer_row._label.set_parts(c.name, parts)
         else:
             self.customer_row._label.setText(tr("tanlash uchun bosing"))
         self.cart_changed.emit()

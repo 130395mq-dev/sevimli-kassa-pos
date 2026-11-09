@@ -281,10 +281,17 @@ class Hub:
             "GET", "customers", params={"card": card}
         )["customers"]
 
-    def create_customer(self, name: str, phone: str, card: str = "") -> dict:
+    def create_customer(self, name: str, phone: str, card: str = "",
+                        birthday: str = "") -> dict:
         return self._call(
             "POST", "customers/create",
-            {"name": name, "phone": phone, "card": card},
+            {"name": name, "phone": phone, "card": card, "birthday": birthday},
+        )["customer"]
+
+    def set_customer_birthday(self, customer_id: int, birthday: str) -> dict:
+        return self._call(
+            "POST", "customers/birthday",
+            {"id": customer_id, "birthday": birthday},
         )["customer"]
 
     def open_shift(self, cashier_id: int, opening_cash: int,
@@ -1228,27 +1235,29 @@ class LiveBackend:
         stats["server"] = server
         return stats
 
-    def find_customer(self, query: str) -> list[Customer]:
-        return [
-            Customer(
-                id=c["id"], ms_id=c["ms_id"], name=c["name"],
-                phone=c.get("phone", ""), card=c.get("card", ""),
-                bonus_points=c.get("bonus_points", 0),
-                accumulation_discount=c.get("accumulation_discount", 0.0),
-                personal_discount=c.get("personal_discount", 0.0),
-            )
-            for c in self.hub.find_customers(query)
-        ]
-
-    def create_customer(self, name: str, phone: str, card: str = "") -> Customer:
-        c = self.hub.create_customer(name, phone, card)
+    @staticmethod
+    def _customer(c: dict) -> Customer:
+        """Server javobidan mijoz. Eski server (tug'ilgan kunsiz) ham bo'ladi."""
         return Customer(
             id=c["id"], ms_id=c["ms_id"], name=c["name"],
             phone=c.get("phone", ""), card=c.get("card", ""),
             bonus_points=c.get("bonus_points", 0),
             accumulation_discount=c.get("accumulation_discount", 0.0),
             personal_discount=c.get("personal_discount", 0.0),
+            birthday=c.get("birthday") or "",
+            is_birthday=bool(c.get("is_birthday")),
         )
+
+    def find_customer(self, query: str) -> list[Customer]:
+        return [self._customer(c) for c in self.hub.find_customers(query)]
+
+    def create_customer(self, name: str, phone: str, card: str = "",
+                        birthday: str = "") -> Customer:
+        return self._customer(self.hub.create_customer(name, phone, card, birthday))
+
+    def set_customer_birthday(self, customer: Customer, birthday: str) -> Customer:
+        """Mavjud mijozga tug'ilgan kunini yozadi (karta urilganda so'raladi)."""
+        return self._customer(self.hub.set_customer_birthday(customer.id, birthday))
 
     def find_customer_by_code(self, code: str) -> Customer | None:
         """Skaner mijoz kartasini o'qiganda — FAQAT karta shtrix-kodi bo'yicha
@@ -1267,11 +1276,5 @@ class LiveBackend:
             return None
         for c in rows:
             if c.get("card") == code:
-                return Customer(
-                    id=c["id"], ms_id=c["ms_id"], name=c["name"],
-                    phone=c.get("phone", ""), card=c.get("card", ""),
-                    bonus_points=c.get("bonus_points", 0),
-                    accumulation_discount=c.get("accumulation_discount", 0.0),
-                    personal_discount=c.get("personal_discount", 0.0),
-                )
+                return self._customer(c)
         return None
