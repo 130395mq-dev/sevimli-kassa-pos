@@ -674,10 +674,14 @@ class OfflineShiftTest(unittest.TestCase):
         # Mahalliy smena: raqam yo'q, lekin ochiq
         self.assertIsNone(sh["id"])
         self.assertEqual(sh["opening_cash"], 500000)
-        # Diskda saqlangan — dastur qayta ochilsa ham turadi
-        local = self.store.get_local_shift()
-        self.assertTrue(local and local["offline"])
-        self.assertEqual(local["opening_cash"], 500000)
+        # Diskda saqlangan — dastur qayta ochilsa ham turadi (1.19.0: jurnalda)
+        path = self.store.path
+        self.store.close()
+        self.store = Store(path)
+        current = self.store.journal_current()
+        self.assertEqual(current["uuid"], sh["uuid"])
+        self.assertEqual(current["opening_cash"], 500000)
+        self.assertEqual(current["open_synced"], 0)
 
     def test_internet_qaytganda_serverga_ochiladi(self):
         hub = FakeHub(online=False)
@@ -695,24 +699,48 @@ class OfflineShiftTest(unittest.TestCase):
         # Sinxronlangach mahalliy belgi tozalanadi
         self.assertIsNone(self.store.get_local_shift())
 
-    def test_onlayn_ochilsa_mahalliy_saqlanmaydi(self):
+    def test_onlayn_ochilsa_ham_xuddi_shunday(self):
+        """1.19.0 (egasi, 12.11.2026): smena internet bor-yo'qligidan qat'i
+        nazar BIR XIL ochiladi — kassada, darhol; serverga fon yetkazadi.
+        Ilgari onlaynda smenani server ochardi (ikki xil yo'l)."""
         hub = FakeHub(online=True)
         backend = LiveBackend(hub, self.store, METHODS)
         sh = backend.open_shift({"id": 0, "name": "kassa"}, 100000)
-        self.assertEqual(sh["number"], 42)
-        self.assertIsNone(self.store.get_local_shift())
+        self.assertIsNone(sh["id"])                      # serverga hali so'rov ketmadi
+        self.assertFalse(hasattr(hub, "opened"))
+        synced = backend.sync_shift()                    # fon oqimi
+        self.assertEqual(synced["number"], 42)
+        self.assertEqual(synced["uuid"], sh["uuid"])     # o'sha smena
+        self.assertEqual(hub.opened["local_uuid"], sh["uuid"])
+        self.assertEqual(self.store.journal_current()["number"], 42)
 
-    def test_server_rad_etsa_mahalliy_ochilmaydi(self):
-        """Server RAD etsa (ombor yo'q) — mahalliy smena YARATILMAYDI.
-        Aks holda hech qachon sinxronlanmaydigan smena qolardi."""
+    def test_server_rad_etsa_ham_savdo_toxtamaydi(self):
+        """1.19.0: server smenani RAD etsa (ombor tanlanmagan) — kassa baribir
+        ishlaydi, sababi saqlanadi va kassirga ko'rsatiladi, sozlama
+        tuzatilgach smena o'zi serverga ochiladi.
+
+        Ilgari bunday holda smena umuman ochilmasdi («hech qachon
+        sinxronlanmaydigan smena qolmasin» deb). Endi smena kassaniki:
+        savdo to'xtamaydi, cheklar kassada kutadi (rad etilmaydi) —
+        pos/test_smena_jurnali.py `SmenaTayyorEmasTest`."""
         class Rejecting(FakeHub):
-            def open_shift(self, *a, **k):
-                raise HubError("ombor tanlanmagan")
+            rad = True
 
-        backend = LiveBackend(Rejecting(online=True), self.store, METHODS)
-        with self.assertRaises(HubError):
-            backend.open_shift({"id": 0, "name": "kassa"}, 100000)
-        self.assertIsNone(self.store.get_local_shift())
+            def open_shift(self, *a, **k):
+                if self.rad:
+                    raise HubError("ombor tanlanmagan", status=409)
+                return super().open_shift(*a, **k)
+
+        hub = Rejecting(online=True)
+        backend = LiveBackend(hub, self.store, METHODS)
+        sh = backend.open_shift({"id": 0, "name": "kassa"}, 100000)
+        self.assertIsNotNone(self.store.journal_current())
+        self.assertIsNone(backend.sync_shift())
+        self.assertEqual(self.store.get("shift_sync_error"), "ombor tanlanmagan")
+        self.assertEqual(self.store.journal_current()["open_synced"], 0)
+        hub.rad = False                                  # panelda ombor tanlandi
+        self.assertEqual(backend.sync_shift()["uuid"], sh["uuid"])
+        self.assertEqual(self.store.get("shift_sync_error"), "")
 
 
 class BarcodeLookupTest(unittest.TestCase):

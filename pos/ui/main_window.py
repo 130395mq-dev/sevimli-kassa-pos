@@ -729,6 +729,21 @@ class MainWindow(QMainWindow):
         self.status_label = _label("", 12, t.MUTED)
         srow.addWidget(self.status_label)
         srow.addStretch(1)
+
+        # MUHIM OGOHLANTIRISH (1.19.0) — katta qizil yozuv, muammo
+        # yechilmaguncha turadi. 12.11.2026 da server 119 ta chekni rad etgan,
+        # kassir esa faqat kichkina sariq «Serverga kutilmoqda» ni ko'rgan
+        # («internet kutilyapti» bilan «server rad etdi» bir xil ko'ringan).
+        # Modal oyna EMAS: skaner «Enter» yuborib uni o'qilmasdan yopib yuborardi.
+        self.alert_bar = QLabel()
+        self.alert_bar.setWordWrap(True)
+        self.alert_bar.setTextFormat(Qt.PlainText)
+        self.alert_bar.setStyleSheet(
+            f"background: {t.DANGER}; color: #FFFFFF; padding: 8px 16px;"
+            " font-size: 14px; font-weight: 700; border: none;"
+        )
+        self.alert_bar.hide()
+        col.addWidget(self.alert_bar)
         col.addWidget(status)
 
         return panel
@@ -1377,6 +1392,11 @@ class MainWindow(QMainWindow):
         """Qisqa xabar — status qatorida."""
         self.status_label.setText(message)
         self.status_label.setStyleSheet(f"color: {t.DANGER}; font-size: 12px;")
+
+    def set_alert(self, message: str) -> None:
+        """Doimiy, modal bo'lmagan MUHIM ogohlantirish (bo'sh matn — yashiradi)."""
+        self.alert_bar.setText(message)
+        self.alert_bar.setVisible(bool(message))
 
     def set_printer_status(self, message: str) -> None:
         """Persistent, non-modal; checkout refresh must not erase warnings."""

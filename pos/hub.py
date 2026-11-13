@@ -39,6 +39,15 @@ from .version import VERSION
 _INFLIGHT: set[str] = set()
 _INFLIGHT_LOCK = threading.Lock()
 
+#: Smenalarni server bilan moslash — bir vaqtda faqat bitta oqim (oyna va
+#: fon oqimi bir paytda urinsa smena serverda ikki marta ochilib/yopilmasin).
+_SHIFT_SYNC_LOCK = threading.Lock()
+
+#: Smenasi hali serverga ochilmagan chek navbatda shu izoh bilan kutadi.
+#: «Serverga ulanib bo'lmadi» bilan boshlanadi — panel buni rad javobi emas,
+#: kutish deb tushunadi (server: sales/aloqa.py `_OUTAGE_MARKS`).
+SHIFT_NOT_READY = "Serverga ulanib bo'lmadi: smena hali serverga ochilmagan"
+
 logger = logging.getLogger(__name__)
 
 TIMEOUT = 15
@@ -307,29 +316,35 @@ class Hub:
         )
 
     def close_shift(self, counted_cash: int | None, closed_at: str = "",
-                    local_uuid: str = "") -> dict:
+                    local_uuid: str = "", shift_id: int | None = None) -> dict:
         """Smenani yopadi.
 
-        `closed_at` — internetsiz yopilgan smena uchun HAQIQIY yopilish
-        vaqti; bo'sh bo'lsa server hozirgi vaqtni qo'yadi. `local_uuid`
+        `closed_at` — smenaning HAQIQIY yopilish vaqti (kassada yopilgan
+        payt); bo'sh bo'lsa server hozirgi vaqtni qo'yadi. `local_uuid`
         qaysi smena yopilayotganini aniqlaydi (takror yuborishda xato
-        smena yopilib qolmasligi uchun).
+        smena yopilib qolmasligi uchun). `shift_id` — eski versiyada onlayn
+        ochilgan (belgisiz) smena uchun serverdagi id; uni tushunmaydigan
+        eski server avvalgidek «ochiq smenani» yopadi.
         """
-        return self._call("POST", "shift/close", {
+        body = {
             "counted_cash": counted_cash,
             "closed_at": closed_at,
             "local_uuid": local_uuid,
-        })
+        }
+        if shift_id:
+            body["shift_id"] = int(shift_id)
+        return self._call("POST", "shift/close", body)
 
     def shift_report(self) -> dict:
         return self._call("GET", "shift/report")
 
     def cash(self, kind: str, amount: int, comment: str = "", local_uuid: str = "",
-             shift_id=None, created_at: str = "") -> dict:
+             shift_id=None, created_at: str = "", shift_local_uuid: str = "") -> dict:
         return self._call(
             "POST", "cash", {"kind": kind, "amount": amount, "comment": comment,
                              "local_uuid": local_uuid or str(uuid.uuid4()),
-                             "shift_id": shift_id, "created_at": created_at}
+                             "shift_id": shift_id, "created_at": created_at,
+                             "shift_local_uuid": shift_local_uuid}
         )
 
     def send_sale(self, payload: dict) -> dict:
@@ -707,8 +722,16 @@ class LiveBackend:
         with _INFLIGHT_LOCK:
             _INFLIGHT.add(local_uuid)
         try:
+            if not self._shift_ready(payload):
+                # Smena internetsiz ochilgan va hali serverga yetmagan: avval
+                # uni ochamiz. Bo'lmasa chek navbatda kutadi (rad etilmaydi).
+                self.sync_shifts()
+                if not self._shift_ready(payload):
+                    self.store.note_outage(
+                        local_uuid, self.store.get("shift_sync_error") or SHIFT_NOT_READY)
+                    return None, True
             try:
-                resp = self.hub.send_sale(payload)
+                resp = self.hub.send_sale(self._wire(payload))
             except (HubConnError, HubAuthError) as e:
                 self.store.note_outage(local_uuid, str(e))
                 return None, True
@@ -738,13 +761,48 @@ class LiveBackend:
                 _INFLIGHT.discard(local_uuid)
 
     def _bind_shift(self, payload: dict) -> None:
-        local = self.store.get_local_shift()
-        if local:
-            payload["shift_local_uuid"] = local["local_uuid"]
+        """Chekni URILGAN smenasiga muhrlaydi. Muhr shu yerda, chek diskka
+        yozilishidan oldin qo'yiladi va keyin hech qachon o'zgarmaydi: chek
+        serverga qachon yetsa ham o'sha smenaga yoziladi."""
+        current = self.store.journal_current()
+        if not current:
+            # Smenasiz savdo bo'lmasligi kerak (oyna yopiq turadi). Bo'lib
+            # qolsa — chek belgisiz ketadi va server o'zi smena ochadi.
+            return
+        if current["legacy"]:
+            # Eski versiyada onlayn ochilgan smena: server uni id bilan taniydi.
+            if current["server_id"]:
+                payload["shift_id"] = int(current["server_id"])
         else:
-            shift_id = self.store.get("active_shift_id")
-            if shift_id:
-                payload["shift_id"] = int(shift_id)
+            payload["shift_local_uuid"] = current["uuid"]
+
+    def _shift_ready(self, payload: dict) -> bool:
+        """Chek/pul amalining smenasi serverga ochilganmi (yuborsa bo'ladimi).
+        Ochilmagan bo'lsa server «bu smena kassada topilmadi» deb rad etardi."""
+        key = payload.get("shift_local_uuid") or ""
+        if not key:
+            return True            # eski ko'rinishdagi yozuv yoki belgisiz
+        row = self.store.journal_get(key)
+        return row is None or bool(row["open_synced"])
+
+    def _wire(self, payload: dict) -> dict:
+        """Serverga ketadigan nusxa: chek smenasining serverdagi id si ma'lum
+        bo'lsa — qo'shib yuboriladi va server smenani id bo'yicha topadi.
+
+        Nega kerak: `shift/open` ba'zan BOSHQA ochiq smenani qaytaradi (kassa
+        kompyuteri almashgan yoki dastur qayta o'rnatilgan — serverda oldingi
+        smena ochiq qolgan). U holda server bizning belgini (uuid) tanimaydi
+        va faqat belgi bilan kelgan chekni «Chek smenasi bu kassada topilmadi»
+        deb abadiy rad etardi. Diskdagi chek o'zgarmaydi — id faqat
+        yuborilayotgan nusxaga qo'shiladi.
+        """
+        key = payload.get("shift_local_uuid") or ""
+        if not key or payload.get("shift_id"):
+            return payload
+        row = self.store.journal_get(key)
+        if row and row["server_id"]:
+            return dict(payload, shift_id=int(row["server_id"]))
+        return payload
 
     def submit_return(self, origin: dict, lines: list[dict],
                       refund_method: str) -> int:
@@ -807,21 +865,30 @@ class LiveBackend:
 
         Chek bilan bir xil yo'l: avval diskka, keyin serverga. Internet
         yo'q bo'lsa amal navbatda qoladi — kassir ishini davom ettiradi va
-        smenani ham yopa oladi. Ulanish tiklanganda amal o'z smenasiga
-        yoziladi (`local_uuid` tufayli ikki marta yozilmaydi).
+        smenani ham yopa oladi. Amal O'Z smenasining belgisi bilan ketadi
+        (`local_uuid` tufayli ikki marta yozilmaydi).
 
-        Ilgari amal faqat serverга yuborilardi va tarmoq uzilsa
-        «tasdiqlanmagan» bayrog'i qolib, smena umuman yopilmay qolardi.
+        Server holat sababli rad etsa (409, masalan smena chalkashligi) —
+        amal O'CHIRILMAYDI: pul kassadan allaqachon olingan/solingan, yozuv
+        navbatda qoladi va chek kabi o'zi qayta yuboriladi. Ilgari bunday
+        amal jimgina o'chirilardi. Boshqa rad javobi (huquq yo'q, summa
+        noto'g'ri) — amal haqiqiy emas: o'chiriladi va kassir xatoni ko'radi.
         """
         self._adopt_stuck_cash()
         local_uuid = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
+        current = self.store.journal_current() or {}
         payload = {
             "kind": kind, "amount": int(amount), "comment": comment,
             "local_uuid": local_uuid, "created_at": created_at,
-            "shift_id": self.store.get("active_shift_id") or None,
+            "shift_id": current.get("server_id") or None,
+            "shift_local_uuid": "" if current.get("legacy") else (current.get("uuid") or ""),
         }
         self.store.queue_cash(local_uuid, payload, created_at)
+        if not self._shift_ready(payload):
+            # Smena hali serverga ochilmagan — amal navbatda, smena ochilgach
+            # o'z smenasiga yoziladi.
+            return {"queued": True, "offline": True}
         try:
             result = self.hub.cash(**payload)
         except HubConnError as e:
@@ -829,8 +896,10 @@ class LiveBackend:
             self.store.note_cash_error(local_uuid, str(e))
             return {"queued": True, "offline": True}
         except HubError as e:
-            # Server RAD etdi (masalan ochiq smena yo'q) — qayta urinmaymiz,
-            # aks holda navbat to'silib qolardi. Kassir xatoni ko'radi.
+            if e.status == 409:
+                self.store.note_cash_rejected(local_uuid, str(e))
+                logger.warning("Pul amali hozircha qabul qilinmadi (navbatda qoladi): %s", e)
+                return {"queued": True, "offline": True, "rejected": True}
             self.store.discard_cash(local_uuid, str(e))
             raise
         self.store.mark_cash_sent(local_uuid)
@@ -861,252 +930,277 @@ class LiveBackend:
     def flush_cash(self) -> int:
         """Navbatdagi pul amallarini yuboradi. Yuborilgan sonini qaytaradi.
 
-        Cheklardan KEYIN, smenani yopishdan OLDIN chaqiriladi — shunda
-        amal o'zining ochiq smenasiga tushadi.
+        Cheklardan KEYIN, smenani serverda yopishdan OLDIN chaqiriladi —
+        shunda amal o'zining ochiq smenasiga tushadi.
         """
         self._adopt_stuck_cash()
         sent = 0
         for row in self.store.pending_cash():
             payload = json.loads(row["payload"])
+            if not self._shift_ready(payload):
+                continue           # smenasi hali serverga ochilmagan — kutadi
+            key = payload.get("shift_local_uuid") or ""
+            if key and not payload.get("shift_id"):
+                # Amal yozilganda smenaning serverdagi id si hali yo'q edi.
+                shift = self.store.journal_get(key)
+                if shift and shift["server_id"]:
+                    payload["shift_id"] = shift["server_id"]
+                    self.store.set_cash_payload(row["local_uuid"], payload)
             try:
                 self.hub.cash(**payload)
             except HubConnError as e:
                 self.store.note_cash_error(row["local_uuid"], str(e))
                 break          # internet yo'q — qolganini ham urinmaymiz
             except HubError as e:
-                self.store.discard_cash(row["local_uuid"], str(e))
-                logger.warning("Pul amali rad etildi: %s", e)
+                if e.status == 409:
+                    # Holat xatosi — amal navbatda qoladi, keyin qayta uriniladi.
+                    self.store.note_cash_rejected(row["local_uuid"], str(e))
+                    logger.warning("Pul amali hozircha qabul qilinmadi: %s", e)
+                else:
+                    self.store.discard_cash(row["local_uuid"], str(e))
+                    logger.warning("Pul amali rad etildi: %s", e)
                 continue
             self.store.mark_cash_sent(row["local_uuid"])
             sent += 1
         return sent
 
-    # ---------------------------------------------------- smena (oflayn ham)
+    # ----------------------------------------------------------------- smena
+    #
+    # «SMENA — KASSANIKI» (egasi, 12.11.2026): smena ochilib-yopilganda
+    # internet bor-yo'qligidan qat'i nazar kassa BIR XIL ishlaydi va chek
+    # urilgan smenasida qoladi.
+    #
+    #   * Smena shu kassada, diskda ochiladi va yopiladi (`store.journal_*`).
+    #     Bu yerda tarmoqqa murojaat YO'Q — oyna hech qachon serverni kutmaydi.
+    #   * Server fonda xabardor qilinadi (`sync_shifts`), cheklar kabi:
+    #     avval diskka, keyin serverga.
+    #   * Kassa qaysi smenada turgani — faqat `store.journal_current()`.
+    #     Server javobi ham, kesh ham buni o'zgartirmaydi.
+    #
+    # Ilgari ikki yo'l bor edi: internet bo'lsa smenani server ochib-yopardi,
+    # bo'lmasa kassa. 12.11.2026 da shu ikki yo'lning tutashgan joyida
+    # internetsiz yopilgan smenaga dastur ertalab qayta kirib ketdi.
+
+    def shift_view(self, row: dict) -> dict:
+        """Jurnal qatoridan — oyna kutadigan smena lug'ati.
+
+        `id` va `number` — serverdagi id va raqam; smena hali serverga
+        yetmagan bo'lsa `None` va «—» (oyna «Smena (oflayn)» deb ko'rsatadi)."""
+        return {
+            "id": row["server_id"],
+            "uuid": row["uuid"],
+            "number": row["number"] if row["number"] is not None else "—",
+            "cashier": row["cashier"],
+            "opened_at": row["opened_at"],
+            "opening_cash": int(row["opening_cash"] or 0),
+            "next_receipt_number": self.store.shift_receipt_count(row["tag"]) + 1,
+        }
+
+    def current_shift(self) -> dict | None:
+        """Hozir ochiq smena (bo'lsa) — kassaning o'z jurnalidan."""
+        row = self.store.journal_current()
+        return self.shift_view(row) if row else None
 
     def open_shift(self, cashier: dict, opening_cash: int) -> dict:
-        """Smena ochadi. Internet bo'lsa — serverда, bo'lmasa MAHALLIY.
-
-        Qaytaradi: oyna kutadigan smena dict'i
-        ({id, number, cashier, opened_at, opening_cash, next_receipt_number}).
-
-        Mahalliy ochilganda `id=None`, `number="—"` bo'ladi — internet
-        qaytganda `sync_shift()` uni serverга ochib, haqiqiy raqamни oladi.
-        """
-        opened_at = datetime.now(timezone.utc).isoformat()
-        try:
-            sh = self.hub.open_shift(cashier.get("id", 0), opening_cash)["shift"]
-            self.store.set("active_shift_id", str(sh["id"]))
-            self.store.set_local_shift(None)  # onlayn — mahalliy kerak emas
-            return sh
-        except HubConnError as e:
-            # Internet yo'q — mahalliy ochamiz (pastda).
-            logger.info("Smena internetsiz ochilyapti (server yo'q: %s)", e)
-        # HubError (server RAD etdi, masalan «ombor tanlanmagan») — bu yerda
-        # ushlamaymiz: yuqoriga ketadi va kassirga xato ko'rsatiladi. Mahalliy
-        # smena yaratsak, u hech qachon sinxronlanmasdi.
-
-        local = {
-            "local_uuid": str(uuid.uuid4()),
-            "cashier_id": cashier.get("id", 0),
-            "cashier": cashier.get("name", ""),
-            "opening_cash": int(opening_cash),
-            "opened_at": opened_at,
-            "offline": True,
-            "next_receipt": 1,
-        }
-        self.store.set_local_shift(local)
-        return {
-            "id": None,
-            "number": "—",
-            "cashier": local["cashier"],
-            "opened_at": opened_at,
-            "opening_cash": int(opening_cash),
-            "next_receipt_number": 1,
-        }
-
-    def current_local_shift(self) -> dict | None:
-        """Diskda saqlangan, hali serverга ochilmagan smena (bo'lsa)."""
-        return self.store.get_local_shift()
-
-    def sync_shift(self) -> dict | None:
-        """Internet qaytganda: mahalliy ochilgan smenani serverga ochadi.
-
-        Idempotent — `local_uuid` tufayli necha marta chaqirilsa ham bitta
-        smena bo'ladi. Muvaffaqiyatli bo'lsa serverdagi smena dict'ini
-        qaytaradi (oyna raqamni yangilashi mumkin), aks holda None.
-        """
-        if self.store.closed_shifts():
-            # Oldingi smena hali serverda yopilmagan — yangisini ochsak
-            # server uni eski smena deb qaytarardi.
-            return None
-        local = self.store.get_local_shift()
-        if not local:
-            return None
-        if local.get("server_id") or not local.get("local_uuid"):
-            # Serverда allaqachon bor (yoki onlayn ochilgan) — bu yerda
-            # ish yo'q. Yopilishi kutilayotgan bo'lsa `sync_shift_close`
-            # navbatlar bo'shagach yopadi.
-            return None
-        try:
-            sh = self.hub.open_shift(
-                local.get("cashier_id", 0),
-                int(local.get("opening_cash") or 0),
-                local_uuid=local.get("local_uuid", ""),
-                opened_at=local.get("opened_at", ""),
-            )["shift"]
-        except HubConnError as e:
-            logger.info("Smena hali sinxronlanmadi (server yo'q: %s)", e)
-            return None
-        except HubError as e:
-            # Server rad etdi (masalan ombor tanlanmagan). Mahalliy smenani
-            # SAQLAB qolamiz — sozlama tuzatilгач o'zi sinxronlanadi.
-            logger.warning("Smena sinxronlanmadi (server rad etdi): %s", e)
-            return None
-        # Serverga ochildi. Navbatdagi cheklar shu ochiq smenaga tushadi.
-        self.store.set("active_shift_id", str(sh["id"]))
-        if local.get("closed_at"):
-            # Smena internetsiz YOPILGAN ham edi — belgini saqlaymiz,
-            # cheklar va pul amallari ketgandan keyin serverда yopamiz.
-            local["server_id"] = sh["id"]
-            self.store.set_local_shift(local)
-        else:
-            self.store.set_local_shift(None)
-            # Bu smenaning cheklari endi serverdagi smenaniki — belgisi ham
-            # «srv:<id>» bo'lsin. Aks holda dastur qayta ochilganda smena
-            # ikkiga bo'linib, internetsiz hisobot kam chiqardi (unzavod3 #39).
-            try:
-                moved = self.store.retag_shift(f"loc:{local['local_uuid']}",
-                                               f"srv:{sh['id']}")
-                logger.info("Smena belgisi serverdagiga o'tkazildi: %s chek", moved)
-            except Exception:  # noqa: BLE001 — belgi xatosi sinxronni to'xtatmasin
-                logger.exception("Smena belgisi o'tkazilmadi")
-        logger.info("Internetsiz ochilgan smena serverга sinxronlandi: #%s",
-                    sh.get("number"))
-        return sh
-
-    # ------------------------------------------------ smenani yopish
-
-    def mark_shift_closed(self, closed_at: str, counted_cash=None) -> None:
-        """Smenani MAHALLIY yopiq deb belgilaydi (internet yo'q paytda).
-
-        Yopilgan smena alohida navbatga tushadi — kassir keyingi smenani
-        ocha oladi, oldingisi esa internet qaytganda o'z vaqti bilan
-        serverda yopiladi.
-
-        Onlayn ochilgan smena uchun ham ishlaydi: o'shanda mahalliy yozuv
-        yo'q edi, shu yerda server id si bilan yaratiladi.
-        """
-        local = self.store.get_local_shift()
-        if not local:
-            server_id = self.store.get("active_shift_id")
-            local = {
-                "local_uuid": "",
-                "server_id": int(server_id) if server_id else None,
-                "opened_at": "",
-                "opening_cash": 0,
-            }
-        local["closed_at"] = closed_at
-        local["counted_cash"] = counted_cash
-        local["shift_tag"] = self.store.get("history_shift_tag") or ""
-        self.store.add_closed_shift(local)
-        self.store.set_local_shift(None)
-
-    def sync_shifts(self) -> None:
-        """Smenalarni server bilan moslaydi — QAT'IY TARTIBDA.
-
-        Avval internetsiz yopilgan smenalar (eng eskisidan): serverda
-        ochiladi, cheklari ketguncha kutiladi, keyin yopiladi. Shundan
-        keyingina yangi smena ochiladi.
-
-        Tartib muhim: serverda bir kassada bitta ochiq smena bo'ladi.
-        Yangi smenani oldingisi yopilmasdan ochsak, server uni eski ochiq
-        smena deb qaytaradi va ikkalasining cheklari aralashib ketardi.
-        """
-        for record in list(self.store.closed_shifts()):
-            if not self._sync_one_closed(record):
-                return          # internet yo'q yoki cheklari hali ketmagan
-        self.sync_shift()
-
-    def _sync_one_closed(self, record: dict) -> bool:
-        """Bitta yopilgan smenani serverga o'tkazadi. Tugasa True."""
-        if record.get("local_uuid") and not record.get("server_id"):
-            try:
-                sh = self.hub.open_shift(
-                    record.get("cashier_id", 0),
-                    int(record.get("opening_cash") or 0),
-                    local_uuid=record["local_uuid"],
-                    opened_at=record.get("opened_at", ""),
-                )["shift"]
-            except HubConnError:
-                return False
-            except HubError as e:
-                logger.warning("Yopilgan smena ochilmadi: %s", e)
-                return False
-            record["server_id"] = sh["id"]
-            self.store.set("active_shift_id", str(sh["id"]))
-            self._save_closed(record)
-
-        # Cheklari va pul amallari ketmaguncha yopmaymiz — aks holda
-        # serverdagi hisobot kassadagidan kam chiqadi.
-        tag = record.get("shift_tag", "")
-        if tag and (self.store.pending_for_tag(tag)
-                    or self.store.pending_cash_for_tag(tag)):
-            return False
-
-        try:
-            self.hub.close_shift(
-                record.get("counted_cash"),
-                closed_at=record.get("closed_at", ""),
-                local_uuid=record.get("local_uuid", ""),
-            )
-        except HubConnError:
-            return False
-        except HubError as e:
-            # Masalan «allaqachon yopilgan» — qayta urinishning ma'nosi
-            # yo'q, navbatdan chiqaramiz (aks holda har flushda takrorlanardi).
-            logger.warning("Smena serverda yopilmadi: %s", e)
-        self._drop_closed(record)
-        if self.store.get("active_shift_id") == str(record.get("server_id") or ""):
-            self.store.set("active_shift_id", "")
-        logger.info("Internetsiz yopilgan smena serverga sinxronlandi")
-        return True
-
-    def _save_closed(self, record: dict) -> None:
-        items = self.store.closed_shifts()
-        for i, item in enumerate(items):
-            if item.get("closed_at") == record.get("closed_at"):
-                items[i] = record
-                break
-        self.store.set_closed_shifts(items)
-
-    def _drop_closed(self, record: dict) -> None:
-        items = [i for i in self.store.closed_shifts()
-                 if i.get("closed_at") != record.get("closed_at")]
-        self.store.set_closed_shifts(items)
+        """Smenani ochadi — shu kassada. Internet bo'lsa ham, bo'lmasa ham
+        bir xil va darhol; serverga fon oqimi yetkazadi."""
+        row = self.store.journal_open(
+            cashier.get("id", 0), cashier.get("name", ""), int(opening_cash or 0),
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return self.shift_view(row)
 
     def finish_shift(self, counted_cash, local_text: str | None = None) -> dict:
-        """Smenani yopadi. Internet bo'lsa serverда, bo'lmasa mahalliy.
+        """Smenani yopadi — shu kassada. Internet bo'lsa ham, bo'lmasa ham
+        bir xil va darhol; serverga fon oqimi yetkazadi (smenaning o'z
+        yopilish vaqti bilan).
 
         Nomi `close_shift` EMAS — o'sha nomni oyna o'zining tugma
         funksiyasi uchun ishlatadi (`backend.close_shift = close_shift`,
         pos/main.py). 1.18.0 da ikkalasi to'qnashib, yopish tugmasi
         jimgina ishlamay qolgan edi.
 
-        `local_text` — internetsiz holat uchun tayyor hisobot matni. Uni
-        oyna chizadi (chek kengligi va do'kon nomi o'shanda), bu yer
-        faqat qaysi yo'ldan borishni hal qiladi.
+        `local_text` — chop etiladigan hisobot matni. Uni oyna kassadagi
+        cheklardan chizadi (pos/smena.py); bu yer faqat smenani yopadi.
         """
-        try:
-            return self.hub.close_shift(counted_cash)
-        except HubConnError as e:
-            if local_text is None:
-                raise
-            logger.info("Smena internetsiz yopilyapti (server yo'q: %s)", e)
-        # Server RAD etgan bo'lsa (oddiy HubError) bu yerга yetib kelmaymiz —
-        # kassirga sabab ko'rsatiladi. Faqat tarmoq uzilganda mahalliy yopamiz.
         closed_at = datetime.now(timezone.utc).isoformat()
-        self.mark_shift_closed(closed_at, counted_cash)
-        return {"receipt_text": local_text, "offline": True, "closed_at": closed_at}
+        current = self.store.journal_current()
+        if current is not None:
+            self.store.journal_close(current["uuid"], closed_at, counted_cash)
+        return {"receipt_text": local_text, "closed_at": closed_at}
+
+    def _close_on_server(self, row: dict) -> None:
+        """Kassada yopilgan smenani serverda yopadi. Muvaffaqiyatda jim
+        qaytadi; aks holda istisno ko'taradi (keyin qayta uriniladi).
+
+        Smena «serverda yopildi» deb FAQAT DALIL bilan hisoblanadi: server
+        yopganini aytdi yoki u yerda bu smena endi ochiq emas. Serverning
+        boshqa rad javoblari (kassa tokeni noto'g'ri, so'rov xato) dalil emas.
+        """
+        key, sid = row["uuid"], row["server_id"]
+        if not row["legacy"]:
+            try:
+                self.hub.close_shift(row["counted_cash"], closed_at=row["closed_at"],
+                                     local_uuid=key, shift_id=sid)
+                return
+            except (HubConnError, HubAuthError):
+                raise
+            except HubError as e:
+                if e.status != 409:
+                    raise
+                # 409 — server bu belgini (uuid) tanimaydi: smena o'zimiz
+                # ochmagan (begona) smenaga ulangan edi. Pastda id bo'yicha.
+                logger.info("Smena belgisi serverda yo'q (%s) — id bo'yicha tekshiriladi", e)
+        # Eski versiyada ochilgan (belgisiz) yoki begona smenaga ulangan smena.
+        # Server bunday smenani faqat «hozir ochiq turgani» sifatida yopa oladi.
+        # ADASHIB BOSHQA smenani yopib qo'ymaslik uchun avval so'raymiz: hozir
+        # ochiq turgani aynan shumi.
+        info = self.hub.hello()
+        open_now = ((info or {}).get("shift") or {}).get("id")
+        if sid and open_now is not None and str(open_now) == str(sid):
+            try:
+                self.hub.close_shift(row["counted_cash"], closed_at=row["closed_at"],
+                                     shift_id=sid)
+            except (HubConnError, HubAuthError):
+                raise
+            except HubError as e:
+                if e.status != 409:
+                    raise
+                logger.info("Smena shu orada yopilgan ekan: %s", e)
+        else:
+            logger.info("Smena serverda allaqachon yopiq (u yerda hozir ochiq: %s)", open_now)
+
+    # ----------------------------------------- smena boshqa joydan yopilgan
+    #
+    # Odatda smenani serverda FAQAT shu kassa yopadi. Lekin ikki holatda
+    # jurnaldagi ochiq smena serverda allaqachon yopiq bo'lib qoladi:
+    #   * dastur eski versiyaga qaytarilgan, smena o'sha versiyada yopilgan,
+    #     keyin yana yangilangan;
+    #   * shu kassa logini bilan boshqa kompyuter ishlab, smenani yopgan.
+    # Bunday smenada sotishda davom etilsa cheklar yopilgan (kechagi) smenaga
+    # yoziladi. Shuning uchun YANGI (keshdan emas) server javobi «bu smena endi
+    # ochiq emas» desa: dastur ochilayotganda smena kassada ham yopiladi va
+    # kassir yangi smena ochadi; ish paytida esa qizil ogohlantirish chiqadi.
+    #
+    # 12.11.2026 dagi xatoning teskarisi emas: u yerda dastur serverning
+    # «smena ochiq» degan so'ziga ishonib, kassada YOPILGAN smenaga kirgan edi.
+    # Bu yerda faqat serverga ochilgan (open_synced) va kassada OCHIQ turgan
+    # smena tekshiriladi; internetsiz ochilgan/yopilgan smenalarga tegilmaydi.
+
+    def shift_closed_elsewhere(self, server_shift, row: dict | None) -> bool:
+        """`row` — jurnaldagi ochiq smena, server javobi SO'RALISHIDAN OLDIN
+        o'qilgan (shunda javob smena serverga ochilgandan keyingi holatni
+        ko'rsatadi). `server_shift` — hello javobidagi `shift` (yoki None)."""
+        if not row or row.get("closed_at") is not None:
+            return False
+        if not row.get("open_synced") or not row.get("server_id"):
+            return False
+        open_id = server_shift.get("id") if isinstance(server_shift, dict) else None
+        return open_id is None or str(open_id) != str(row["server_id"])
+
+    def drop_shift_closed_elsewhere(self, server_shift) -> dict | None:
+        """Dastur ochilganda (yangi hello bilan): jurnaldagi ochiq smena
+        serverda yopilgan bo'lsa — kassada ham yopadi. Yopilgan qatorni
+        qaytaradi (bo'lmasa None)."""
+        row = self.store.journal_current()
+        if not self.shift_closed_elsewhere(server_shift, row):
+            return None
+        self.store.journal_close(row["uuid"], datetime.now(timezone.utc).isoformat(), None)
+        self.store.set("shift_stale", "")
+        logger.warning(
+            "Jurnaldagi ochiq smena (#%s, server id %s) serverda yopilgan — kassada ham "
+            "yopildi; kassir yangi smena ochadi", row.get("number"), row.get("server_id"))
+        return row
+
+    def note_server_shift(self, server_shift, row: dict | None) -> bool:
+        """Ish paytida (fon oqimi, har hello dan keyin): smena boshqa joydan
+        yopilgan bo'lsa belgi qo'yadi — oyna qizil ogohlantirish ko'rsatadi.
+        Smenaga o'zi tegmaydi (kassir sotuv o'rtasida bo'lishi mumkin)."""
+        stale = self.shift_closed_elsewhere(server_shift, row)
+        mark = row["uuid"] if stale and row else ""
+        if (self.store.get("shift_stale") or "") != mark:
+            self.store.set("shift_stale", mark)
+            if mark:
+                logger.warning("Smena (server id %s) serverda yopilgan — kassirga ogohlantirish",
+                               row.get("server_id"))
+        return stale
+
+    def sync_shifts(self) -> dict | None:
+        """Smena jurnalini server bilan moslaydi — QAT'IY TARTIBDA.
+
+        Har smena: avval serverga ochiladi, cheklari va pul amallari ketadi,
+        keyin (kassada yopilgan bo'lsa) serverda yopiladi. Keyingi smena
+        oldingisi yopilgandan KEYINGINA ochiladi: serverda bir kassada bitta
+        ochiq smena bo'ladi, aks holda u yangi smenani eskisiga qo'shib
+        yuborardi.
+
+        Tarmoq xatosida jim to'xtaydi va keyingi safar davom etadi. Qaytaradi:
+        joriy (ochiq) smena shu chaqiruvda serverga ochilgan bo'lsa — uning
+        ko'rinishi (oyna raqamni yangilaydi), aks holda None.
+        """
+        if not _SHIFT_SYNC_LOCK.acquire(blocking=False):
+            return None            # boshqa oqim shu ishni qilyapti
+        opened_now = None
+        try:
+            for row in self.store.journal_pending():
+                key = row["uuid"]
+                if not row["open_synced"]:
+                    try:
+                        sh = self.hub.open_shift(
+                            row["cashier_id"], int(row["opening_cash"] or 0),
+                            local_uuid=key, opened_at=row["opened_at"],
+                        )["shift"]
+                    except HubConnError as e:
+                        logger.info("Smena hali serverga ochilmadi (server yo'q: %s)", e)
+                        return opened_now
+                    except HubError as e:
+                        # Server rad etdi (masalan ombor tanlanmagan). Smena
+                        # kassada ochiq qoladi, savdo davom etadi; sozlama
+                        # tuzatilgach o'zi sinxronlanadi.
+                        logger.warning("Smena serverga ochilmadi (server rad etdi): %s", e)
+                        self.store.set("shift_sync_error", str(e)[:300])
+                        return opened_now
+                    if not isinstance(sh, dict) or not sh.get("id"):
+                        # Tushunarsiz javob — «ochildi» deb belgilamaymiz.
+                        logger.warning("Smena ochish javobi tushunarsiz: %r", sh)
+                        self.store.set("shift_sync_error", "Server javobi tushunarsiz")
+                        return opened_now
+                    self.store.journal_mark_open(key, sh.get("id"), sh.get("number"))
+                    self.store.set("shift_sync_error", "")
+                    row = self.store.journal_get(key)
+                    logger.info("Smena serverga ochildi: #%s", sh.get("number"))
+                    if row["closed_at"] is None:
+                        opened_now = self.shift_view(row)
+                if row["closed_at"] is None:
+                    continue       # hozir ochiq smena — yopishga hali erta
+
+                # Kassada yopilgan. Cheklari va pul amallari ketmaguncha
+                # serverda yopmaymiz — aks holda u yerdagi hisobot kam chiqadi.
+                tag = row["tag"]
+                if tag and (self.store.pending_for_tag(tag)
+                            or self.store.pending_cash_for_tag(tag)):
+                    return opened_now
+                try:
+                    self._close_on_server(row)
+                except HubConnError:
+                    return opened_now
+                except HubError as e:
+                    # Server rad etdi va smena u yerda yopilgani ISBOTLANMADI
+                    # (masalan kassa tokeni bekor qilingan). «Yopildi» deb
+                    # belgilamaymiz — keyin qayta uriniladi. Aks holda smena
+                    # serverda ochiq qolib, ertangi smena unga qo'shilib ketardi.
+                    logger.warning("Smena serverda yopilmadi: %s", e)
+                    self.store.set("shift_sync_error", str(e)[:300])
+                    return opened_now
+                self.store.journal_mark_closed(key)
+                self.store.set("shift_sync_error", "")
+                logger.info("Kassada yopilgan smena serverda ham yopildi")
+            return opened_now
+        finally:
+            _SHIFT_SYNC_LOCK.release()
+
+    #: Eski nom (fon oqimi shu nom bilan chaqirardi).
+    sync_shift = sync_shifts
 
     def discard_empty_receipts(self) -> int:
         """Eski bo'sh yozuvlarni ham ko'radi; tarmoq va retry limitiga bog'liq emas."""
@@ -1138,6 +1232,10 @@ class LiveBackend:
                 if row["local_uuid"] in _INFLIGHT:
                     continue
             payload = json.loads(row["payload"])
+            if not self._shift_ready(payload):
+                # Smenasi hali serverga ochilmagan — chek navbatda kutadi
+                # (urinish sanalmaydi), smena ochilgach o'zi ketadi.
+                continue
             # Bo'sh (0 summali) chek — serverга umuman yubormaymiz. Aks holda
             # server uni rad etib turadi, kassa cheksiz qayta urinadi va
             # «navbatда 1 chek» xabari hech ketmaydi. Chetга chiqaramiz.
@@ -1145,7 +1243,7 @@ class LiveBackend:
                 self.store.discard(row["local_uuid"], "Bo'sh (0 summali) chek — yuborilmadi")
                 continue
             try:
-                resp = self.hub.send_sale(payload)
+                resp = self.hub.send_sale(self._wire(payload))
             except (HubConnError, HubAuthError) as e:
                 # Ulanish yoki token xatosi — sabab UMUMIY (internet yo'q
                 # yoki kassa uzilgan). Qolganini urinishning ma'nosi yo'q,

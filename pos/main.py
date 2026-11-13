@@ -234,10 +234,7 @@ def main() -> int:
 
     # Kirish ekrani oynaning ichida (pastda, LoginScreen). Bu yerda faqat
     # holatni eslab qolamiz: smena bormi, kim ochgan.
-    shift = info.get("shift")
     cashier = None
-    if shift:
-        logger.info("Smena ochiq (%s) — kirish ekranida PIN so'raladi", shift.get("cashier"))
 
     backend = LiveBackend(hub, store, info["payment_methods"])
     # Qog'oz chekda MoySklad raqami chiqsin: server javobi 5 soniyagacha
@@ -247,22 +244,30 @@ def main() -> int:
         info.get("price_types") or [], info.get("default_price_type") or ""
     )
 
-    # Server ochiq smena ko'rsatmasa, lekin diskda internetsiz ochilgan
-    # smena bo'lsa — o'shani tiklaymiz. Kassir dastur qayta ochilganda
-    # razmen pulini qaytadan kiritmaydi, smena joyida turaveradi.
-    if not shift:
-        local = store.get_local_shift()
-        if local:
-            shift = {
-                "id": None,
-                "number": "—",
-                "cashier": local.get("cashier", ""),
-                "opened_at": local.get("opened_at", ""),
-                "opening_cash": int(local.get("opening_cash") or 0),
-                "next_receipt_number": int(local.get("next_receipt") or 1),
-            }
-            logger.info("Internetsiz ochilgan smena tiklandi (kassir: %s)",
-                        local.get("cashier"))
+    # QAYSI SMENADA TURIBMIZ — faqat kassaning o'z jurnalidan (1.19.0,
+    # «smena — kassaniki»). Server javobi (`info["shift"]`) ham, kesh ham
+    # bunga ta'sir QILMAYDI.
+    #
+    # 12.11.2026 gacha bu yerda `shift = info.get("shift")` turardi: server
+    # «smena ochiq» desa dastur o'sha smenaga kirib ketardi. O'sha kuni
+    # kechqurun internetsiz yopilgan smena serverda hali ochiq edi — ertalab
+    # dastur razmen so'ramay unga qayta kirdi, fon oqimi smenani yopdi va
+    # 136 ta chek «Ochiq smena yo'q» deb rad etildi.
+    #
+    # Bitta istisno — teskari holat: jurnaldagi OCHIQ smenani server HOZIR
+    # (keshdan emas) «u yopilgan» desa. Bu dastur eski versiyaga qaytarilib
+    # smena o'sha yerda yopilganda yoki shu login bilan boshqa kompyuter
+    # ishlaganda bo'ladi. Unda smena kassada ham yopiladi va kassir yangisini
+    # ochadi — aks holda bugungi cheklar kechagi (yopiq) smenaga yozilardi.
+    if not offline:
+        try:
+            backend.drop_shift_closed_elsewhere(info.get("shift"))
+        except Exception:  # noqa: BLE001 — tekshiruv xatosi dasturni to'xtatmasin
+            logger.exception("Smena holati server bilan solishtirilmadi")
+    shift = backend.current_shift()
+    if shift:
+        logger.info("Smena ochiq (%s) — kassa jurnalidan; kirish ekranida PIN so'raladi",
+                    shift.get("cashier"))
 
     # Katalog bo'sh bo'lsa — birinchi to'liq yuklash
     if store.product_count() == 0:
@@ -326,36 +331,33 @@ def main() -> int:
     sale_no = {"n": 1}
 
     def _history_tag(sh: dict) -> str:
-        """Smenaning barqaror belgisi — tarixда «shu smenadagi cheklar» uchun.
-        Onlayn smenada server id, oflaynda mahalliy uuid. Smena davomida
-        (oflayn→onlayn sinxronда ham) o'zgarmaydi, chunki faqat shu yerда,
-        smenaga kirilганда o'rnatiladi."""
-        if sh.get("id"):
-            return f"srv:{sh['id']}"
-        local = store.get_local_shift()
-        if local and local.get("local_uuid"):
-            return f"loc:{local['local_uuid']}"
+        """Smenaning o'zgarmas belgisi — jurnaldan. Shu smenaning hamma cheki
+        shu belgi bilan yoziladi va belgi hech qachon o'zgarmaydi (ilgari
+        internetsiz ochilgan smena serverga o'tganda «loc:» → «srv:» ga
+        ko'chirilardi — unzavod3 #39 shundan ikkiga bo'lingan edi)."""
+        row = store.journal_current()
+        if row:
+            return row["tag"]
         return f"loc:{sh.get('opened_at', '')}"
 
     def _enter_kassa(sh: dict, fresh: bool = False) -> None:
         """`fresh` — smena hozirgina ochildi (razmen kiritildi). Aks holda
         mavjud smenaga qaytilyapti (qayta ochilish, chiqib-kirish)."""
         session["shift"] = sh
-        if sh.get("id"):
-            store.set("active_shift_id", str(sh["id"]))
-        # Bundan keyingi cheklar shu smenaga tegishli deb belgilanadi.
-        # Internetsiz ochilib serverga o'tgan smenaga qaytilsa — ertalabki
-        # cheklar ham shu belgiga ko'chadi (unzavod3 #39, 2026-10-28).
+        tag = _history_tag(sh)
         try:
-            store.enter_shift_tag(_history_tag(sh), fresh=fresh)
+            store.set("history_shift_tag", tag)
+            # Eski versiyadan qolgan belgi nomlari bo'lsa — shu smenaga yig'iladi.
+            store.merge_shift_tags(tag)
         except Exception:  # noqa: BLE001 — belgi xatosi savdoni to'xtatmasin
             logger.exception("Smena belgisi moslanmadi")
-            store.set("history_shift_tag", _history_tag(sh))
         sale_no["n"] = int(sh.get("next_receipt_number") or 1)
         window.shift_label.setText(_shift_caption(sh))
         window.centralWidget().setEnabled(True)
         login_screen.hide()
         window.scan_input.setFocus()
+        if fresh:
+            flush_now.set()   # fon oqimi smenani darhol serverga yetkazadi
 
     def _print_sale(cart, plan) -> None:
         """Savdo tugagach mijoz chekini chiqaradi (avtomatik)."""
@@ -434,7 +436,8 @@ def main() -> int:
     def _apply_shift_synced(sh: dict) -> None:
         """Internetsiz ochilgan smena serverга ochildi — raqamni yangilaymiz."""
         cur = session.get("shift")
-        if cur and cur.get("id") is None and sh:
+        if (cur and sh and cur.get("id") is None
+                and cur.get("uuid") == sh.get("uuid")):
             session["shift"] = sh
             window.shift_label.setText(_shift_caption(sh))
             window.flash(tr("Smena serverga ochildi (#{n})").format(n=sh.get("number")))
@@ -786,19 +789,52 @@ def main() -> int:
     backend.discount_asker = ask_discount
     backend.points_asker = ask_points
 
+    def _local_shift_report(row: dict, sh: dict, is_final: bool) -> str:
+        """Smena hisoboti — kassaning O'ZIDAGI cheklardan (1.19.0).
+
+        Internet bo'lsa ham, bo'lmasa ham bir xil chiqadi. Ilgari onlaynda
+        hisobotni server chizardi, oflaynda kassa — ikki xil yo'l; oraliq
+        hisobot esa internetsiz umuman chiqmasdi."""
+        from datetime import datetime, timezone
+
+        from shared.receipt import render as render_shift
+
+        from .smena import build_shift_receipt, unsent_banner
+
+        width = config.receipt_width
+        try:
+            store.merge_shift_tags(row["tag"])
+        except Exception:  # noqa: BLE001 — hisobot baribir chiqsin
+            logger.exception("Smena belgilari birlashtirilmadi")
+        text = render_shift(
+            build_shift_receipt(
+                store, backend.methods,
+                market=info.get("market", "Sevimli Market"),
+                point=info.get("point", ""),
+                register=(info.get("register") or {}).get("name", ""),
+                cashier=sh.get("cashier", ""),
+                shift_no=sh.get("number") or "—",
+                opened_at=sh.get("opened_at", ""),
+                closed_at=datetime.now(timezone.utc).isoformat(),
+                opening_cash=sh.get("opening_cash", 0),
+                shift_tag=row["tag"],
+                is_final=is_final,
+            ),
+            width,
+        )
+        return unsent_banner(text, width, store.unsent_for_tag(row["tag"]))
+
     def show_report() -> None:
         from . import printer
 
-        try:
-            data = hub.shift_report()
-        except HubError as e:
-            QMessageBox.warning(None, tr("Hisobot"), str(e))
+        row = store.journal_current()
+        if not row:
+            QMessageBox.warning(None, tr("Hisobot"), tr("Ochiq smena yo'q"))
             return
-        printed, path = printer.print_text(
-            data["receipt_text"], config.printer, name="oraliq"
-        )
-        ReceiptDialog(data["receipt_text"], printed, path, window,
-                      on_reprint=lambda: _reprint_text(data["receipt_text"], "oraliq")
+        text = _local_shift_report(row, session.get("shift") or {}, is_final=False)
+        printed, path = printer.print_text(text, config.printer, name="oraliq")
+        ReceiptDialog(text, printed, path, window,
+                      on_reprint=lambda: _reprint_text(text, "oraliq")
                       ).exec()
 
     def _reprint_text(text: str, name: str) -> str:
@@ -847,7 +883,9 @@ def main() -> int:
                 else f"Kassadan {amount // 100} so'm chiqarildi")
         # Internet yo'q bo'lsa amal navbatда qoladi — kassir buni bilsin,
         # lekin ishi to'xtamaydi (smena ham yopiladi).
-        if isinstance(result, dict) and result.get("offline"):
+        if isinstance(result, dict) and result.get("rejected"):
+            done += " · serverga keyinroq yoziladi"
+        elif isinstance(result, dict) and result.get("offline"):
             done += " · internet qaytganda serverga ketadi"
         window.flash(done)
 
@@ -928,9 +966,11 @@ def main() -> int:
             payload = _json.loads(r["payload"])
             total = sum(p["amount"] for p in payload.get("payments", []))
             _sent = r["sent"]
-            state = ("bekor" if _sent == 2
-                     else (tr("yuborildi") if _sent else tr("navbatda")))
             keys = r.keys()
+            _rejected = (not _sent and "attempts" in keys and (r["attempts"] or 0) > 0)
+            state = ("bekor" if _sent == 2
+                     else (tr("yuborildi") if _sent
+                           else (tr("rad etildi") if _rejected else tr("navbatda"))))
             check_no = r["check_no"] if "check_no" in keys else None
             is_return = payload.get("kind") == "return"
             rows.append({
@@ -1205,12 +1245,10 @@ def main() -> int:
         flush_now.set()   # fon oqimi darhol yuboradi
 
     def close_shift() -> None:
-        from datetime import datetime, timezone
-
-        from shared.receipt import render as render_shift
+        from datetime import datetime
 
         from . import printer
-        from .smena import build_shift_receipt, offline_banner, parked_close_block
+        from .smena import parked_close_block
 
         # Qoldirilgan chek bor — smena yopilmaydi (egasi, 2026-11-06).
         # Kassirga o'sha yerning o'zidan «Qoldirilgan cheklar»ni ochish
@@ -1225,50 +1263,23 @@ def main() -> int:
                 open_parked()
             return
 
-        # Yopishdan oldin navbatni bo'shatishga urinamiz — internet bo'lsa
-        # hisobotni server chizadi va raqam bitta joyda hisoblanadi.
-        try:
-            backend.flush()
-        except Exception:
-            pass
+        row = store.journal_current()
+        if not row:
+            # Bo'lmasligi kerak (smenasiz kassa oynasi yopiq turadi).
+            session["shift"] = None
+            window.shift_label.setText("")
+            _show_open_shift()
+            return
 
-        # Internet yo'qligi endi to'siq emas: chek kassaning o'zida turadi,
-        # demak hisobot to'liq chiqadi. Faqat server RAD ETGAN cheklar
-        # haqida ogohlantiramiz — ular haqiqatan ham muammo.
-        stuck = store.stuck_count()
-        dialog = CloseShiftDialog(stuck, window)
+        # Smena shu kassada yopiladi — internet bo'lsa ham, bo'lmasa ham bir
+        # xil va darhol; serverga fon oqimi yetkazadi. Bu yerda tarmoqqa
+        # murojaat YO'Q. Faqat serverga hali yetmagan cheklar soni aytiladi.
+        dialog = CloseShiftDialog(store.unsent_for_tag(row["tag"]), window)
         if dialog.exec() != CloseShiftDialog.Accepted:
             return
 
-        # Internetsiz yopilsa shu matn chop etiladi. Serverга ulanib
-        # bo'lsa server chizgan matn ishlatiladi — ikkisi bir xil
-        # formulalar bilan hisoblanadi.
         sh = session.get("shift") or {}
-        width = config.receipt_width
-        # Shu smenaning eski belgi bilan qolib ketgan cheklari ham hisobotga
-        # tushsin (internetsiz ochilib, keyin serverga o'tgan smena).
-        try:
-            store.merge_shift_tags(store.get("history_shift_tag") or "")
-        except Exception:  # noqa: BLE001 — hisobot baribir chiqsin
-            logger.exception("Smena belgilari birlashtirilmadi")
-        local_text = offline_banner(
-            render_shift(
-                build_shift_receipt(
-                    store, backend.methods,
-                    market=info.get("market", "Sevimli Market"),
-                    point=info.get("point", ""),
-                    register=(info.get("register") or {}).get("name", ""),
-                    cashier=sh.get("cashier", ""),
-                    shift_no=sh.get("number") or "—",
-                    opened_at=sh.get("opened_at", ""),
-                    closed_at=datetime.now(timezone.utc).isoformat(),
-                    opening_cash=sh.get("opening_cash", 0),
-                    shift_tag=store.get("history_shift_tag") or "",
-                ),
-                width,
-            ),
-            width,
-        )
+        local_text = _local_shift_report(row, sh, is_final=True)
 
         try:
             result = backend.finish_shift(dialog.counted, local_text)
@@ -1278,6 +1289,7 @@ def main() -> int:
                 f"{e}\n\nSabab tuzatilgach qayta urinib ko'ring.",
             )
             return
+        flush_now.set()   # fon oqimi yopilishni serverga yetkazadi
 
         # Qog'oz tugab qolsa ham chek yo'qolmasin — saqlab qo'yamiz
         # (keyin «Smena chekini qayta chiqarish» dan olinadi).
@@ -1297,7 +1309,6 @@ def main() -> int:
         # login-parol qayta so'ralmaydi, «SMENA OCHISH» tugmasi chiqadi.
         # Boshqa kassir kirishi kerak bo'lsa — o'sha ekrandagi «Chiqish».
         session["shift"] = None
-        store.set("active_shift_id", "")
         window.shift_label.setText("")
         if session.get("cashier"):
             _show_open_shift()
@@ -1382,6 +1393,49 @@ def main() -> int:
             f"color: {'#6B7672' if online and not pending else '#8A5A12'};"
             f"font-size: 12px;"
         )
+        _apply_alert()
+        _apply_shift_number()
+
+    def _apply_alert() -> None:
+        """Server cheklarni RAD ETAYOTGAN bo'lsa — katta qizil ogohlantirish.
+        «Internet kutilyapti» (sariq, kichik) bilan adashtirilmasin: bu yerda
+        odam aralashuvi kerak. Savdo to'xtamaydi — cheklar kassada saqlanadi."""
+        try:
+            rejected = store.rejected_count() + store.rejected_cash_count()
+            sync_error = store.get("shift_sync_error")
+            reason = store.rejected_reason()
+            stale = store.get("shift_stale")
+            if stale:
+                current = store.journal_current()
+                stale = bool(current and current["uuid"] == stale)
+        except Exception:  # noqa: BLE001 — ogohlantirish xatosi savdoni to'xtatmasin
+            logger.exception("Ogohlantirish holati o'qilmadi")
+            return
+        if stale:
+            text = tr("DIQQAT: bu smena serverda yopilgan (boshqa kompyuterdan). "
+                      "Smenani yoping va yangi smena oching.")
+        elif rejected:
+            text = tr("DIQQAT: {n} ta chekni server qabul qilmadi. Savdoni davom "
+                      "ettiring — cheklar kassada saqlanadi. Menejerga ayting.").format(n=rejected)
+            if reason:
+                text += " " + tr("Sabab: {r}").format(r=reason[:120])
+        elif sync_error:
+            text = tr("DIQQAT: smena serverga yetmadi. Savdoni davom ettiring — "
+                      "cheklar kassada saqlanadi. Menejerga ayting.") + " " + \
+                tr("Sabab: {r}").format(r=sync_error[:120])
+        else:
+            text = ""
+        window.set_alert(text)
+
+    def _apply_shift_number() -> None:
+        """Fon oqimi smenani serverga ochgach — raqam yorliqda yangilanadi."""
+        cur = session.get("shift")
+        if not cur or cur.get("id") is not None:
+            return
+        fresh_view = backend.current_shift()
+        if fresh_view and fresh_view.get("uuid") == cur.get("uuid") and fresh_view.get("id") is not None:
+            session["shift"] = fresh_view
+            window.shift_label.setText(_shift_caption(fresh_view))
 
     def _apply_moysklad(link) -> None:
         # Server ↔ MoySklad holati — hello javobidagi `links.moysklad`.
@@ -1453,10 +1507,8 @@ def main() -> int:
                 logger.info("To'lov turlari paneldan yangilandi: %s",
                             ", ".join(m.get("name", "") for m in methods))
                 window.flash(tr("To'lov turlari yangilandi"))
-        sh = fresh.get("shift")
-        if sh:
-            session["shift"] = sh
-            window.shift_label.setText(f"Smena #{sh['number']} · {sh['cashier']}")
+        # `fresh["shift"]` (serverdagi ochiq smena) bu yerda ISHLATILMAYDI:
+        # kassa qaysi smenada turgani — faqat o'z jurnalidan (1.19.0).
 
     bridge.settings_refreshed.connect(_apply_settings)
     bridge.moysklad.connect(_apply_moysklad)
@@ -1812,7 +1864,14 @@ def main() -> int:
                 requested_session = getattr(hub, "session", "") or ""
                 bg_hub.session = requested_session
                 try:
+                    # Joriy smena so'rovdan OLDIN o'qiladi: javob shundan
+                    # keyingi server holatini ko'rsatadi (poyga bo'lmaydi).
+                    shift_before = bg_store.journal_current()
                     fresh = bg_hub.hello(queue=bg_store.hello_queue())
+                    try:
+                        bg_backend.note_server_shift(fresh.get("shift"), shift_before)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("Smena holati server bilan solishtirilmadi")
                     # Keshni yangilab turamiz — keyingi ochilishда server
                     # o'chiq bo'lsa ham eng so'nggi holat (smena, sozlama)
                     # bilan oflayn davom etiladi.

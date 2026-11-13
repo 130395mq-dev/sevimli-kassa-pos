@@ -17,12 +17,17 @@ Aks holda tok o'chsa savdo yo'qoladi.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+import uuid as _uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
 from . import qidiruv
 from .cart import Product
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
@@ -96,6 +101,38 @@ CREATE TABLE IF NOT EXISTS cash_outbox (
     shift_tag  TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS cash_pending ON cash_outbox(sent, created_at);
+
+-- SMENA JURNALI (1.19.0) — «smena kassaniki».
+--
+-- Smena shu jadvalda ochiladi va yopiladi — internet bor-yo'qligidan qat'i
+-- nazar bir xil. Server keyin, fonda xabardor qilinadi (cheklar kabi: avval
+-- diskka, keyin serverga). Dastur ochilganda qaysi smenada turgani SHU
+-- YERDAN olinadi, serverdan ham, keshdan ham emas.
+--
+-- 12.11.2026 gacha smena holati to'rt joyda (active_shift_id, local_shift,
+-- closed_shifts, last_hello) va serverda yashardi. O'sha kuni internetsiz
+-- yopilgan smenaga dastur ertalab qayta kirib ketdi (server «hali ochiq»
+-- degan), fon oqimi smenani yopdi va 136 ta chek rad etildi.
+CREATE TABLE IF NOT EXISTS shifts (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- Smenaning o'zgarmas belgisi. Kassa beradi, hech qachon o'zgarmaydi.
+    uuid         TEXT NOT NULL UNIQUE,
+    -- Shu smena cheklarining outbox.shift_tag qiymati. Ham o'zgarmaydi.
+    tag          TEXT NOT NULL,
+    server_id    INTEGER,          -- serverdagi id (serverga ochilgach)
+    number       INTEGER,          -- smena raqami (server beradi)
+    cashier_id   INTEGER NOT NULL DEFAULT 0,
+    cashier      TEXT NOT NULL DEFAULT '',
+    opened_at    TEXT NOT NULL,
+    opening_cash INTEGER NOT NULL DEFAULT 0,
+    closed_at    TEXT,             -- NULL — smena ochiq
+    counted_cash INTEGER,
+    open_synced  INTEGER NOT NULL DEFAULT 0,
+    close_synced INTEGER NOT NULL DEFAULT 0,
+    -- 1 — eski versiyada (jurnalsiz, onlayn) ochilgan smena: server uni
+    -- belgi (uuid) bilan emas, faqat `server_id` bilan taniydi.
+    legacy       INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -158,6 +195,34 @@ class Store:
         bc_cols = {r[1] for r in self.db.execute("PRAGMA table_info(barcodes)")}
         if "quantity" not in bc_cols:
             self.db.execute("ALTER TABLE barcodes ADD COLUMN quantity REAL NOT NULL DEFAULT 1")
+
+        # 1.19.0: rad etilgan chek/pul amali o'zi qayta yuboriladi — keyingi
+        # urinish vaqti (`retry_at`, UTC ISO). NULL — hozir yuborsa bo'ladi.
+        if "retry_at" not in ob_cols:
+            self.db.execute("ALTER TABLE outbox ADD COLUMN retry_at TEXT")
+            # Yangilanishgacha tiqilib qolgan cheklar — birinchi navbatda
+            # qayta yuboriladi (ilgari ular tugma bosilguncha turardi).
+            self.db.execute(
+                "UPDATE outbox SET retry_at = ? WHERE sent = 0 AND attempts >= ?",
+                (self._now(), self.MAX_ATTEMPTS),
+            )
+        cash_cols = {r[1] for r in self.db.execute("PRAGMA table_info(cash_outbox)")}
+        if "attempts" not in cash_cols:
+            self.db.execute("ALTER TABLE cash_outbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        if "retry_at" not in cash_cols:
+            self.db.execute("ALTER TABLE cash_outbox ADD COLUMN retry_at TEXT")
+
+        # 1.19.0: eski smena holatini jurnalga ko'chiramiz.
+        if not self.get("journal_v1"):
+            self._adopt_legacy_shifts()
+            self.set("journal_v1", "1")
+        elif self._legacy_shift_state():
+            # Jurnal bor, lekin eski kalitlar yana to'lgan: dastur eski
+            # versiyaga QAYTARILGAN, u yerda smena ochilgan/yopilgan va endi
+            # yana yangilangan. Eski versiya qoldirgan holat yangiroq.
+            logger.warning("Eski versiya smena holati topildi (dastur orqaga "
+                           "qaytarilgan edi) — jurnalga qo'shilmoqda")
+            self._adopt_legacy_shifts()
 
     def set_price_type(self, price_type_id: str | None) -> None:
         """Kassa qaysi narx turida sotadi — saqlanadi, qayta ochilganda ham
@@ -469,16 +534,35 @@ class Store:
             (local_uuid, json.dumps(payload, ensure_ascii=False), created_at, shift_tag),
         )
 
-    #: Chek shuncha marta rad etilsa — «tiqilib qolgan» deb chetga chiqadi.
-    #: Bu bitta yaroqsiz chek butun navbatni to'sib qo'yishining oldini
-    #: oladi (server uni har safar rad etsa, orqadagilar yubprilaveradi).
+    #: Chek shuncha marta rad etilsa — «tiqilib qolgan» deb chetga chiqadi:
+    #: bitta yaroqsiz chek butun navbatni to'sib qo'ymaydi (server uni har
+    #: safar rad etsa ham orqadagilar yuborilaveradi).
+    #:
+    #: 1.19.0 dan «chetga chiqdi» — «unutildi» degani EMAS: tiqilgan chek
+    #: har `RETRY_EVERY` soniyada o'zi qayta yuboriladi. Ilgari u abadiy
+    #: to'xtardi va faqat «Ma'lumotlarni yangilash» tugmasi qayta yuborardi
+    #: (12.11.2026: kassa3 da 119 chek besh soat shunday turdi).
     MAX_ATTEMPTS = 20
 
+    #: Tiqilgan chek/pul amali shuncha soniyada bir marta o'zi qayta yuboriladi
+    RETRY_EVERY = 15 * 60
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @classmethod
+    def _retry_at(cls) -> str:
+        return (datetime.now(timezone.utc) + timedelta(seconds=cls.RETRY_EVERY)).isoformat()
+
     def pending(self, limit: int = 50) -> list[sqlite3.Row]:
+        """Hozir yuboriladigan cheklar: urinish limiti tugamaganlari va
+        tiqilganlaridan qayta urinish vaqti kelganlari."""
         return self.db.execute(
-            "SELECT * FROM outbox WHERE sent = 0 AND attempts < ?"
+            "SELECT * FROM outbox WHERE sent = 0 AND (attempts < ?"
+            " OR (retry_at IS NOT NULL AND retry_at <= ?))"
             " ORDER BY created_at LIMIT ?",
-            (self.MAX_ATTEMPTS, limit),
+            (self.MAX_ATTEMPTS, self._now(), limit),
         ).fetchall()
 
     def pending_count(self) -> int:
@@ -489,12 +573,30 @@ class Store:
         ).fetchone()[0]
 
     def stuck_count(self) -> int:
-        """Ko'p marta rad etilib, tiqilib qolgan cheklar soni (odam
-        aralashuvi kerak — server ularni qabul qilmayapti)."""
+        """Ko'p marta rad etilib, tiqilib qolgan cheklar soni (odam qarashi
+        kerak — server ularni qabul qilmayapti). Ular ham vaqti-vaqti bilan
+        o'zi qayta yuboriladi (`RETRY_EVERY`)."""
         return self.db.execute(
             "SELECT COUNT(*) FROM outbox WHERE sent = 0 AND attempts >= ?",
             (self.MAX_ATTEMPTS,),
         ).fetchone()[0]
+
+    def rejected_count(self) -> int:
+        """Server kamida bir marta RAD ETGAN, hali yuborilmagan cheklar.
+
+        «Internet kutilyapti» dan farqi shu: aloqa uzilishi `attempts` ni
+        oshirmaydi (note_outage), rad javobi oshiradi (mark_failed). Kassa
+        ekranidagi qizil ogohlantirish shunga qaraydi."""
+        return self.db.execute(
+            "SELECT COUNT(*) FROM outbox WHERE sent = 0 AND attempts > 0"
+        ).fetchone()[0]
+
+    def rejected_reason(self) -> str:
+        row = self.db.execute(
+            "SELECT last_error FROM outbox WHERE sent = 0 AND attempts > 0"
+            " AND last_error <> '' ORDER BY created_at LIMIT 1"
+        ).fetchone()
+        return row["last_error"] if row else ""
 
     def mark_sent(self, local_uuid: str, check_no: int | None = None,
                   receipt_number: str | None = None) -> None:
@@ -586,14 +688,27 @@ class Store:
         ).fetchall()
 
     def retry_stuck(self) -> None:
-        self.db.execute("UPDATE outbox SET attempts=0 WHERE sent=0 AND attempts>=?",
+        """«Ma'lumotlarni yangilash»: tiqilgan cheklar va pul amallari HOZIR
+        qayta yuboriladi (kutish vaqti bekor qilinadi, urinish sanog'i
+        boshidan)."""
+        self.db.execute("UPDATE outbox SET attempts=0, retry_at=NULL WHERE sent=0 AND attempts>=?",
                         (self.MAX_ATTEMPTS,))
+        self.db.execute(
+            "UPDATE cash_outbox SET attempts=0, retry_at=NULL WHERE sent=0 AND attempts>=?",
+            (self.MAX_ATTEMPTS,))
 
     def mark_failed(self, local_uuid: str, error: str) -> None:
+        """Server chekni RAD ETDI. Urinish limiti tugasa chek «tiqilgan»
+        bo'ladi va shundan keyin `RETRY_EVERY` da bir marta o'zi qayta
+        yuboriladi — hech qachon butunlay tashlab qo'yilmaydi."""
         self.db.execute(
             "UPDATE outbox SET attempts = attempts + 1, last_error = ?"
             " WHERE local_uuid = ?",
             (error[:500], local_uuid),
+        )
+        self.db.execute(
+            "UPDATE outbox SET retry_at = ? WHERE local_uuid = ? AND attempts >= ?",
+            (self._retry_at(), local_uuid, self.MAX_ATTEMPTS),
         )
 
     def forget_sent(self, keep_days: int = 30) -> None:
@@ -707,9 +822,40 @@ class Store:
         )
 
     def pending_cash(self) -> list[sqlite3.Row]:
+        """Hozir yuboriladigan pul amallari (cheklar bilan bir xil qoida)."""
         return self.db.execute(
-            "SELECT * FROM cash_outbox WHERE sent = 0 ORDER BY created_at"
+            "SELECT * FROM cash_outbox WHERE sent = 0 AND (attempts < ?"
+            " OR (retry_at IS NOT NULL AND retry_at <= ?)) ORDER BY created_at",
+            (self.MAX_ATTEMPTS, self._now()),
         ).fetchall()
+
+    def unsent_cash_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM cash_outbox WHERE sent = 0").fetchone()[0]
+
+    def rejected_cash_count(self) -> int:
+        return self.db.execute(
+            "SELECT COUNT(*) FROM cash_outbox WHERE sent = 0 AND attempts > 0"
+        ).fetchone()[0]
+
+    def note_cash_rejected(self, local_uuid: str, error: str) -> None:
+        """Server pul amalini RAD ETDI. O'chirilmaydi (1.19.0): pul kassadan
+        allaqachon olingan/solingan — amal navbatda qoladi va chek kabi o'zi
+        qayta yuboriladi. Ilgari rad etilgan amal jimgina o'chirilardi."""
+        self.db.execute(
+            "UPDATE cash_outbox SET attempts = attempts + 1, last_error = ?"
+            " WHERE local_uuid = ?",
+            (error[:400], local_uuid),
+        )
+        self.db.execute(
+            "UPDATE cash_outbox SET retry_at = ? WHERE local_uuid = ? AND attempts >= ?",
+            (self._retry_at(), local_uuid, self.MAX_ATTEMPTS),
+        )
+
+    def set_cash_payload(self, local_uuid: str, payload: dict) -> None:
+        self.db.execute(
+            "UPDATE cash_outbox SET payload = ? WHERE local_uuid = ?",
+            (json.dumps(payload, ensure_ascii=False), local_uuid),
+        )
 
     def mark_cash_sent(self, local_uuid: str) -> None:
         self.db.execute(
@@ -745,7 +891,9 @@ class Store:
         return [json.loads(r["payload"]) for r in rows]
 
     def pending_for_tag(self, shift_tag: str) -> int:
-        """Shu smenaning hali yuborilmagan cheklari soni."""
+        """Shu smenaning hali yuborilmagan (tiqilmagan) cheklari soni.
+        Smena serverda shular ketgandan keyin yopiladi; tiqilgan chek smenani
+        ushlab turmaydi — u o'z smenasining belgisi bilan keyin ham boradi."""
         return self.db.execute(
             "SELECT COUNT(*) FROM outbox WHERE sent = 0 AND attempts < ?"
             " AND shift_tag = ?",
@@ -753,11 +901,291 @@ class Store:
         ).fetchone()[0]
 
     def pending_cash_for_tag(self, shift_tag: str) -> int:
-        """Shu smenaning hali yuborilmagan pul amallari soni."""
+        """Shu smenaning hali yuborilmagan (tiqilmagan) pul amallari soni."""
         return self.db.execute(
-            "SELECT COUNT(*) FROM cash_outbox WHERE sent = 0 AND shift_tag = ?",
-            (shift_tag,),
+            "SELECT COUNT(*) FROM cash_outbox WHERE sent = 0 AND attempts < ?"
+            " AND shift_tag = ?",
+            (self.MAX_ATTEMPTS, shift_tag),
         ).fetchone()[0]
+
+    def unsent_for_tag(self, shift_tag: str) -> int:
+        """Shu smenaning serverga hali yetmagan cheklari (rad etilgani ham)."""
+        return self.db.execute(
+            "SELECT COUNT(*) FROM outbox WHERE sent = 0 AND shift_tag = ?", (shift_tag,)
+        ).fetchone()[0]
+
+    def shift_receipt_count(self, shift_tag: str) -> int:
+        """Shu smenada urilgan savdo cheklari soni (keyingi chek raqami uchun)."""
+        n = 0
+        for row in self.db.execute(
+            "SELECT payload FROM outbox WHERE shift_tag = ? AND sent != 2", (shift_tag,)
+        ):
+            try:
+                if json.loads(row["payload"]).get("kind") != "return":
+                    n += 1
+            except (ValueError, TypeError, AttributeError):
+                n += 1
+        return n
+
+    # ------------------------------------------------------- smena jurnali
+    #
+    # «Smena — kassaniki» (egasi, 12.11.2026): smena ochilib-yopilganda
+    # internet bor-yo'qligidan qat'i nazar kassa BIR XIL ishlaydi; chek urilgan
+    # smenasida qoladi. Sxema boshidagi `shifts` jadvali izohiga qarang.
+
+    _JOURNAL_COLS = ("uuid", "tag", "server_id", "number", "cashier_id", "cashier",
+                     "opened_at", "opening_cash", "closed_at", "counted_cash",
+                     "open_synced", "close_synced", "legacy")
+
+    def _journal_insert(self, **row) -> None:
+        cols = [c for c in self._JOURNAL_COLS if c in row]
+        self.db.execute(
+            f"INSERT INTO shifts ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+            [row[c] for c in cols],
+        )
+
+    def journal_get(self, key: str) -> dict | None:
+        row = self.db.execute("SELECT * FROM shifts WHERE uuid = ?", (key,)).fetchone()
+        return dict(row) if row else None
+
+    def journal_current(self) -> dict | None:
+        """Hozir OCHIQ smena (bo'lsa). Dastur shu bilan ishlaydi."""
+        row = self.db.execute(
+            "SELECT * FROM shifts WHERE closed_at IS NULL ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def journal_open(self, cashier_id, cashier: str, opening_cash: int,
+                     opened_at: str | None = None) -> dict:
+        """Smenani ochadi — shu kassada, diskda. Internet kerak emas.
+
+        Ochiq smena bo'lsa O'SHANI qaytaradi: bir kassada ikkita ochiq smena
+        bo'lmaydi (tugma ikki marta bosilsa ham)."""
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            current = self.journal_current()
+            if current is None:
+                key = str(_uuid.uuid4())
+                tag = f"loc:{key}"
+                self._journal_insert(
+                    uuid=key, tag=tag, cashier_id=int(cashier_id or 0), cashier=cashier or "",
+                    opened_at=opened_at or self._now(), opening_cash=int(opening_cash or 0),
+                )
+                # Bundan keyingi cheklar shu smenaning belgisi bilan yoziladi.
+                self.set("history_shift_tag", tag)
+                current = self.journal_get(key)
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+        return current
+
+    def journal_close(self, key: str, closed_at: str | None = None,
+                      counted_cash=None) -> dict | None:
+        """Smenani yopadi — shu kassada, diskda. Internet kerak emas.
+        Allaqachon yopilgan bo'lsa hech narsa o'zgarmaydi (vaqti saqlanadi)."""
+        self.db.execute(
+            "UPDATE shifts SET closed_at = ?, counted_cash = ?"
+            " WHERE uuid = ? AND closed_at IS NULL",
+            (closed_at or self._now(), counted_cash, key),
+        )
+        return self.journal_get(key)
+
+    def journal_pending(self) -> list[dict]:
+        """Serverga hali to'liq yetmagan smenalar — ochilgan tartibida."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM shifts WHERE open_synced = 0"
+            " OR (closed_at IS NOT NULL AND close_synced = 0) ORDER BY seq"
+        )]
+
+    def journal_mark_open(self, key: str, server_id, number) -> None:
+        self.db.execute(
+            "UPDATE shifts SET open_synced = 1, server_id = ?, number = ? WHERE uuid = ?",
+            (server_id, number, key),
+        )
+
+    def journal_mark_closed(self, key: str) -> None:
+        self.db.execute("UPDATE shifts SET close_synced = 1 WHERE uuid = ?", (key,))
+
+    #: Serverga to'liq yetgan eski smenalardan nechta saqlanadi
+    JOURNAL_KEEP = 200
+
+    def journal_trim(self) -> None:
+        self.db.execute(
+            "DELETE FROM shifts WHERE close_synced = 1 AND seq <= ("
+            " SELECT COALESCE(MAX(seq), 0) - ? FROM shifts)", (self.JOURNAL_KEEP,),
+        )
+
+    def _legacy_shift_state(self) -> bool:
+        """Eski versiya (≤1.18.21) o'z smena holatini yozib qo'yganmi.
+
+        Yangi versiya bu kalitlarga HECH QACHON yozmaydi (jurnalga ko'chirgach
+        tozalaydi). Demak ular bo'sh bo'lmasa — bazada eski versiya ishlagan."""
+        if (self.get("active_shift_id") or "").strip():
+            return True
+        if isinstance(self.get_local_shift(), dict) and self.get_local_shift():
+            return True
+        return bool(self.closed_shifts())
+
+    def _journal_find(self, key: str = "", server_id=None) -> dict | None:
+        """Jurnal qatori — belgi (uuid) yoki serverdagi id bo'yicha."""
+        if key:
+            row = self.journal_get(key)
+            if row is not None:
+                return row
+        try:
+            sid = int(server_id) if server_id else 0
+        except (TypeError, ValueError):
+            sid = 0
+        if sid:
+            row = self.db.execute(
+                "SELECT * FROM shifts WHERE server_id = ? ORDER BY seq DESC LIMIT 1", (sid,)
+            ).fetchone()
+            if row is not None:
+                return dict(row)
+        return None
+
+    def _tag_taken(self, tag: str, but: str = "") -> bool:
+        """`tag` jurnaldagi boshqa (`but` dan boshqa) smenaning belgisimi."""
+        return bool(tag) and self.db.execute(
+            "SELECT 1 FROM shifts WHERE tag = ? AND uuid != ? LIMIT 1", (tag, but)
+        ).fetchone() is not None
+
+    def _fold_tag(self, old: str, row: dict) -> int:
+        """`old` belgili chek va pul amallarini jurnal smenasining o'zgarmas
+        belgisiga yig'adi. Dastur eski versiyaga qaytarilganda u cheklarni
+        «srv:<id>» belgisiga ko'chirib qo'yadi; jurnal esa o'z belgisini
+        saqlaydi. Tranzaksiyani chaqiruvchi boshqaradi."""
+        new = row["tag"]
+        if not old or not new or old == new or self._tag_taken(old, row["uuid"]):
+            return 0
+        moved = self.db.execute(
+            "UPDATE outbox SET shift_tag = ? WHERE shift_tag = ?", (new, old)).rowcount
+        self.db.execute("UPDATE cash_outbox SET shift_tag = ? WHERE shift_tag = ?", (new, old))
+        aliases = self._tag_aliases()
+        if aliases.pop(new, None) is not None:
+            self.set("shift_tag_aliases", json.dumps(aliases))
+        if (self.get("history_shift_tag") or "") == old:
+            self.set("history_shift_tag", new)
+        return moved
+
+    def _adopt_legacy_shifts(self) -> None:
+        """Eski versiya (≤1.18.21) smena holatini jurnalga ko'chiradi.
+
+        Birinchi yangilanishda jurnal bo'sh — eski holat shunchaki ko'chadi.
+        Yangilanish smena o'rtasida kelishi mumkin: ochiq smena ochiq qoladi,
+        internetsiz yopilib serverga yetmagan smenalar navbatda qoladi, cheklar
+        o'z smenasida (belgisi o'zgarmaydi).
+
+        Dastur eski versiyaga qaytarilib, yana yangilangan bo'lsa jurnal bo'sh
+        emas. Unda eski versiya qoldirgan holat YANGIROQ:
+          * u yopgan smena jurnalda ham yopiladi (o'sha vaqti bilan);
+          * u davom ettirgan smena davom etadi (cheklari jurnal belgisiga
+            qaytariladi);
+          * u boshqa smena ochgan bo'lsa — jurnaldagi ochiq smena tugagan
+            hisoblanadi va yangisi qo'shiladi. Serverga hammasi odatdagi
+            tartibda yetkaziladi (`sync_shifts`).
+        """
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            tag_now = self.get("history_shift_tag") or ""
+
+            def end_current(when: str) -> None:
+                # Jurnalda ochiq qolgan smena eski versiyada davom etmagan —
+                # demak u tugagan (yangi smena boshlangan payt).
+                cur = self.journal_current()
+                if cur is not None:
+                    self.db.execute(
+                        "UPDATE shifts SET closed_at = ? WHERE uuid = ? AND closed_at IS NULL",
+                        (when or self._now(), cur["uuid"]),
+                    )
+
+            def free_tag(tag: str, fallback: str) -> str:
+                return tag if tag and not self._tag_taken(tag) else fallback
+
+            # 1) Internetsiz yopilgan, serverga hali yetmagan smenalar (eskisidan).
+            for rec in self.closed_shifts():
+                if not isinstance(rec, dict) or not rec.get("closed_at"):
+                    continue
+                own = (rec.get("local_uuid") or "").strip()
+                sid = rec.get("server_id") or None
+                row = self._journal_find(own, sid)
+                if row is not None:
+                    # Shu smena jurnalda bor — eski versiya uni yopgan.
+                    if row["closed_at"] is None:
+                        self.db.execute(
+                            "UPDATE shifts SET closed_at = ?, counted_cash = ?"
+                            " WHERE uuid = ? AND closed_at IS NULL",
+                            (rec["closed_at"], rec.get("counted_cash"), row["uuid"]),
+                        )
+                    self._fold_tag(rec.get("shift_tag") or "", row)
+                    continue
+                end_current(rec.get("opened_at") or rec["closed_at"])
+                key = own or str(_uuid.uuid4())
+                self._journal_insert(
+                    uuid=key, tag=free_tag(rec.get("shift_tag") or "", f"loc:{key}"),
+                    server_id=sid,
+                    cashier_id=int(rec.get("cashier_id") or 0), cashier=rec.get("cashier") or "",
+                    opened_at=rec.get("opened_at") or rec["closed_at"],
+                    opening_cash=int(rec.get("opening_cash") or 0),
+                    closed_at=rec["closed_at"], counted_cash=rec.get("counted_cash"),
+                    open_synced=1 if sid else 0, legacy=0 if own else 1,
+                )
+            # 2) Hozir ochiq smena: internetsiz ochilgan yoki onlayn ochilgan.
+            local = self.get_local_shift()
+            if not isinstance(local, dict):
+                local = {}
+            active = (self.get("active_shift_id") or "").strip()
+            if local.get("local_uuid") and not local.get("closed_at"):
+                key = local["local_uuid"]
+                sid = local.get("server_id") or None
+                row = self._journal_find(key, sid)
+                if row is None:
+                    end_current(local.get("opened_at") or "")
+                    self._journal_insert(
+                        uuid=key, tag=free_tag(tag_now, f"loc:{key}"), server_id=sid,
+                        cashier_id=int(local.get("cashier_id") or 0),
+                        cashier=local.get("cashier") or "",
+                        opened_at=local.get("opened_at") or self._now(),
+                        opening_cash=int(local.get("opening_cash") or 0),
+                        open_synced=1 if sid else 0,
+                    )
+                elif row["closed_at"] is None:
+                    self._fold_tag(tag_now, row)      # o'sha smena davom etyapti
+            elif active.isdigit():
+                row = self._journal_find("", int(active))
+                if row is None:
+                    seen = {}
+                    try:
+                        seen = (json.loads(self.get("last_hello") or "{}") or {}).get("shift") or {}
+                    except (ValueError, TypeError, AttributeError):
+                        seen = {}
+                    if not isinstance(seen, dict) or str(seen.get("id")) != active:
+                        seen = {}
+                    end_current(seen.get("opened_at") or "")
+                    key = str(_uuid.uuid4())
+                    number = seen.get("number")
+                    self._journal_insert(
+                        uuid=key, tag=free_tag(tag_now, f"srv:{active}"), server_id=int(active),
+                        number=number if isinstance(number, int) else None,
+                        cashier=seen.get("cashier") or "",
+                        opened_at=seen.get("opened_at") or self._now(),
+                        opening_cash=int(seen.get("opening_cash") or 0),
+                        open_synced=1, legacy=1,
+                    )
+                elif row["closed_at"] is None:
+                    self._fold_tag(tag_now, row)      # o'sha smena davom etyapti
+                # Jurnalda YOPILGAN smena eski versiyada «ochiq» ko'ringan bo'lsa
+                # (u server so'ziga ishonib kirgan) — jurnal haq: smena yopiq
+                # qoladi, kassir yangisini ochadi.
+            # Eski kalitlar endi ishlatilmaydi — ikki joyda ikki xil haqiqat bo'lmasin.
+            self.set("closed_shifts", "")
+            self.set("local_shift", "")
+            self.set("active_shift_id", "")
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
 
     # -------------------------------------- internetsiz yopilgan smenalar
 
@@ -960,7 +1388,12 @@ class Store:
         Internetsiz yopilib hali serverga yetmagan smena (yoki hali
         serverga o'tmagan mahalliy smena) — tegilmaydi."""
         prev = self.get("history_shift_tag") or ""
-        if (not fresh and prev != new_tag and prev.startswith("loc:")
+        # Jurnaldagi (1.19.0) smenaning belgisi o'zgarmas — cheklari hech
+        # qachon boshqa belgiga ko'chirilmaydi. Quyidagi ko'chirish faqat
+        # eski versiyadan qolgan, jurnalga kirmagan belgilar uchun.
+        in_journal = bool(prev) and self.db.execute(
+            "SELECT 1 FROM shifts WHERE tag = ?", (prev,)).fetchone() is not None
+        if (not fresh and not in_journal and prev != new_tag and prev.startswith("loc:")
                 and new_tag.startswith("srv:")):
             pending_closed = any(r.get("shift_tag") == prev for r in self.closed_shifts())
             local = self.get_local_shift() or {}

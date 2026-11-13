@@ -249,7 +249,7 @@ class CloseShiftDialog(BaseDialog):
         if pending:
             note += (
                 f"\n\nDiqqat: {pending} ta chek hali serverga yetib bormagan. "
-                "Smena baribir yopiladi, cheklar navbatda qoladi."
+                "Ular kassada saqlangan va o'zi yuboriladi — smena baribir yopiladi."
             )
         big = _label(text, 20, t.INK, bold=True)
         big.setAlignment(Qt.AlignCenter)

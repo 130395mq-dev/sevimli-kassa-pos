@@ -53,17 +53,27 @@ class OutboxRegressionTest(unittest.TestCase):
         self.store.retry_stuck()
         self.assertEqual(self.store.pending_count(), 1)
 
-    def test_offline_shift_is_bound_before_queue(self):
-        self.store.set_local_shift({"local_uuid": "offline-shift"})
+    def test_shift_is_bound_before_queue(self):
+        """1.19.0: chek jurnaldagi ochiq smenaning o'zgarmas belgisi bilan
+        muhrlanadi — internet bor-yo'qligidan qat'i nazar bir xil."""
+        shift = self.store.journal_open(3, "Kassir", 100_000_00)
         payload = {}
         LiveBackend(None, self.store, [])._bind_shift(payload)
-        self.assertEqual(payload["shift_local_uuid"], "offline-shift")
+        self.assertEqual(payload, {"shift_local_uuid": shift["uuid"]})
 
-    def test_online_shift_is_bound_before_queue(self):
-        self.store.set("active_shift_id", "7")
+    def test_legacy_online_shift_is_bound_by_server_id(self):
+        """Eski versiyada onlayn ochilgan smena (yangilanish smena o'rtasida
+        keldi): server uni id bilan taniydi — chek shu id bilan ketadi."""
+        self.store._journal_insert(uuid="eski", tag="srv:7", server_id=7, opened_at="2026-11-12",
+                                   open_synced=1, legacy=1)
         payload = {}
         LiveBackend(None, self.store, [])._bind_shift(payload)
-        self.assertEqual(payload["shift_id"], 7)
+        self.assertEqual(payload, {"shift_id": 7})
+
+    def test_no_shift_no_binding(self):
+        payload = {}
+        LiveBackend(None, self.store, [])._bind_shift(payload)
+        self.assertEqual(payload, {})
 
 
 class JunkReceiptTest(unittest.TestCase):
@@ -378,9 +388,10 @@ class OfflineHub:
                           "opening_cash": opening_cash,
                           "next_receipt_number": 1}}
 
-    def close_shift(self, counted_cash, closed_at="", local_uuid=""):
+    def close_shift(self, counted_cash, closed_at="", local_uuid="", shift_id=None):
         self._check()
-        self.closed.append({"closed_at": closed_at, "local_uuid": local_uuid})
+        self.closed.append({"closed_at": closed_at, "local_uuid": local_uuid,
+                            "shift_id": shift_id})
         self.events.append(("close", local_uuid))
         return {"receipt_text": "SERVER HISOBOTI"}
 
@@ -411,14 +422,15 @@ class OfflineShiftDayTest(unittest.TestCase):
     def _offline_day(self):
         """Smenani internetsiz ochadi, sotadi, pul chiqaradi."""
         shift = self.backend.open_shift({"id": 3, "name": "Kassir"}, 100_000_00)
-        tag = "loc:" + self.store.get_local_shift()["local_uuid"]
-        self.store.set("history_shift_tag", tag)
+        current = self.store.journal_current()
+        tag = current["tag"]
+        self.assertEqual(self.store.get("history_shift_tag"), tag)
         self.backend.submit = None  # to'g'ridan-to'g'ri navbatga yozamiz
         for i, (cash, card) in enumerate([(50_000_00, 0), (0, 30_000_00),
                                           (20_000_00, 0)]):
             uid = f"chek-{i}"
             self.store.queue(uid, _sale(uid, cash=cash, card=card, tag=tag,
-                                        shift_uuid=self.store.get_local_shift()["local_uuid"]),
+                                        shift_uuid=current["uuid"]),
                              f"2026-09-21T1{i}:00:00+00:00")
         self.backend.cash("out", 10_000_00)
         return shift, tag
@@ -427,7 +439,9 @@ class OfflineShiftDayTest(unittest.TestCase):
         shift, _ = self._offline_day()
         self.assertIsNone(shift["id"])
         self.assertEqual(shift["number"], "—")
-        self.assertTrue(self.store.get_local_shift()["offline"])
+        current = self.store.journal_current()          # diskda — qayta ochilsa ham turadi
+        self.assertEqual(current["uuid"], shift["uuid"])
+        self.assertEqual(current["open_synced"], 0)
 
     def test_cash_move_does_not_block_anything(self):
         self._offline_day()
@@ -459,7 +473,7 @@ class OfflineShiftDayTest(unittest.TestCase):
         from shared.receipt import render
         _, tag = self._offline_day()
         ret = _sale("qaytarish-1", cash=20_000_00, tag=tag,
-                    shift_uuid=self.store.get_local_shift()["local_uuid"])
+                    shift_uuid=self.store.journal_current()["uuid"])
         ret.update(kind="return", net_total=20_000_00)
         self.store.queue("qaytarish-1", ret, "2026-09-21T15:00:00+00:00")
         r = build_shift_receipt(
@@ -495,16 +509,24 @@ class OfflineShiftDayTest(unittest.TestCase):
         self.hub.online = True
         for _ in range(3):
             self.backend.flush()
-        srv = f"srv:{self.hub._next_id}"
-        # Serverga o'tishi bilan ertalabki cheklar ham server belgisida
-        self.assertEqual(self.store.get("history_shift_tag"), srv)
-        self.assertEqual(len(self.store.shift_sales(loc)), 0)
-        self.assertEqual(len(self.store.shift_sales(srv)), 3)
+        # 1.19.0: smena serverga o'tsa ham belgisi O'ZGARMAYDI — cheklar hech
+        # qayerga ko'chirilmaydi (ilgari «loc:» → «srv:» ko'chirilardi va
+        # shu ko'chirishning o'zi smenani ikkiga bo'lgan edi).
+        current = self.store.journal_current()
+        self.assertEqual(current["open_synced"], 1)
+        self.assertEqual(current["server_id"], self.hub._next_id)
+        self.assertEqual(current["tag"], loc)
+        self.assertEqual(self.store.get("history_shift_tag"), loc)
+        self.assertEqual(len(self.store.shift_sales(loc)), 3)
 
-        # Dastur qayta ochildi — serverdagi smenaga qaytildi
-        self.store.enter_shift_tag(srv, fresh=False)
+        # Dastur qayta ochildi — o'sha smenaga qaytildi (jurnaldan)
+        path = self.store.path
+        self.store.close()
+        self.store = Store(path)
+        self.backend = LiveBackend(self.hub, self.store, METHODS)
+        self.assertEqual(self.store.journal_current()["tag"], loc)
         self.store.queue("chek-tushdan-keyin",
-                         _sale("chek-tushdan-keyin", cash=5_000_00, tag=srv),
+                         _sale("chek-tushdan-keyin", cash=5_000_00, tag=loc),
                          "2026-09-21T16:00:00+00:00")
         self.hub.online = False
         r = self._report(self.store.get("history_shift_tag"))
@@ -516,7 +538,10 @@ class OfflineShiftDayTest(unittest.TestCase):
         """Eski versiyada bo'lingan smena (cheklar «loc:» da qolgan, joriy
         smena «srv:») — yangi versiyada smenaga qaytilganda birlashadi."""
         _, loc = self._offline_day()
-        # Eski xatti-harakat: serverga o'tdi, lekin belgi «loc:» qoldi
+        # Eski xatti-harakat: serverga o'tdi, lekin belgi «loc:» qoldi.
+        # Eski versiya ma'lumoti — jurnalda bunday smena yo'q (jurnaldagi
+        # smenaning belgisi esa hech qachon ko'chirilmaydi).
+        self.store.db.execute("DELETE FROM shifts")
         self.store.set_local_shift(None)
         self.store.enter_shift_tag("srv:558", fresh=False)
         self.assertEqual(len(self.store.shift_sales("srv:558")), 3)
@@ -554,9 +579,9 @@ class OfflineShiftDayTest(unittest.TestCase):
     def test_close_offline_then_sync_in_the_evening(self):
         _, tag = self._offline_day()
         result = self.backend.finish_shift(None, local_text="MAHALLIY HISOBOT")
-        self.assertTrue(result["offline"])
         self.assertEqual(result["receipt_text"], "MAHALLIY HISOBOT")
-        self.assertEqual(len(self.store.closed_shifts()), 1)
+        self.assertIsNone(self.store.journal_current())          # kassada yopildi
+        self.assertEqual(len(self.store.journal_pending()), 1)   # serverga hali yetmagan
 
         # --- kechqurun internet keldi
         self.hub.online = True
@@ -569,9 +594,9 @@ class OfflineShiftDayTest(unittest.TestCase):
         self.assertEqual(len(self.hub.closed), 1)
         # Smena O'Z vaqti bilan yopildi, ulanish tiklangan vaqt bilan emas
         self.assertEqual(self.hub.closed[0]["closed_at"], result["closed_at"])
-        # Navbat bo'sh, mahalliy belgilar tozalandi
-        self.assertEqual(self.store.closed_shifts(), [])
-        self.assertIsNone(self.store.get_local_shift())
+        # Navbat bo'sh, jurnalda serverga yetmagan smena qolmadi
+        self.assertEqual(self.store.journal_pending(), [])
+        self.assertEqual(self.hub.closed[0]["local_uuid"], self.hub.opened[0]["local_uuid"])
         self.assertEqual(self.store.unsent_count(), 0)
 
     def test_shift_closes_before_the_next_one_opens(self):
@@ -579,10 +604,9 @@ class OfflineShiftDayTest(unittest.TestCase):
         _, tag1 = self._offline_day()
         self.backend.finish_shift(None, local_text="1")
         # Ertasiga yana internetsiz ochildi
-        self.backend.open_shift({"id": 3, "name": "Kassir"}, 100_000_00)
-        self.store.set("history_shift_tag",
-                       "loc:" + self.store.get_local_shift()["local_uuid"])
-        self.assertIsNotNone(self.store.get_local_shift())
+        second = self.backend.open_shift({"id": 3, "name": "Kassir"}, 100_000_00)
+        self.assertEqual(self.store.journal_current()["uuid"], second["uuid"])
+        self.assertNotEqual(self.store.journal_current()["tag"], tag1)
 
         self.hub.online = True
         for _ in range(4):
@@ -593,22 +617,28 @@ class OfflineShiftDayTest(unittest.TestCase):
         # Aks holda server yangi smena deb eskisini qaytarib yuborardi.
         kinds = [kind for kind, _ in self.hub.events]
         self.assertEqual(kinds, ["open", "close", "open"])
-        self.assertEqual(self.store.closed_shifts(), [])
+        self.assertEqual(self.store.journal_pending(), [])
+        self.assertEqual(self.store.journal_current()["open_synced"], 1)
 
     def test_online_shift_closed_offline_syncs_too(self):
         """Smena onlayn ochilgan, kunduzi internet uzildi, oqshom yopildi."""
         self.hub.online = True
-        self.backend.open_shift({"id": 3, "name": "Kassir"}, 100_000_00)
-        self.assertEqual(self.store.get("active_shift_id"), "101")
+        shift = self.backend.open_shift({"id": 3, "name": "Kassir"}, 100_000_00)
+        self.backend.flush()                        # fon: smena serverga ochildi
+        self.assertEqual(self.store.journal_current()["server_id"], 101)
         self.hub.online = False
         self.backend.finish_shift(None, local_text="MAHALLIY")
-        record = self.store.closed_shifts()[0]
-        self.assertEqual(record["server_id"], 101)
+        (record,) = self.store.journal_pending()
+        self.assertEqual((record["server_id"], record["open_synced"], record["close_synced"]),
+                         (101, 1, 0))
 
         self.hub.online = True
         self.backend.flush()
         self.assertEqual(len(self.hub.closed), 1)
         self.assertEqual(len(self.hub.opened), 1)   # qayta ochilmadi
+        # Aynan O'SHA smena yopildi — belgisi bilan («qaysi ochiq bo'lsa» emas)
+        self.assertEqual(self.hub.closed[0]["local_uuid"], shift["uuid"])
+        self.assertEqual(self.store.journal_pending(), [])
 
 
 class BackendNameCollisionTest(unittest.TestCase):
@@ -634,8 +664,11 @@ class BackendNameCollisionTest(unittest.TestCase):
             hub.online = True
             backend.open_shift({"id": 1, "name": "K"}, 0)
             result = backend.finish_shift(None, local_text="x")
-            self.assertEqual(result["receipt_text"], "SERVER HISOBOTI")
+            # 1.19.0: hisobot har doim kassaning o'zidagi cheklardan — internet
+            # bo'lsa ham (ilgari onlaynda serverning matni chiqardi).
+            self.assertEqual(result["receipt_text"], "x")
             self.assertEqual(calls, [])
+            self.assertIsNone(store.journal_current())
             store.close()
         finally:
             tmp.cleanup()
@@ -837,12 +870,32 @@ class ParkedCloseBlockTest(unittest.TestCase):
         self.assertIn("Отложенных чеков: 3", text)
 
     def test_yopish_tekshiruvdan_keyin_boshlanadi(self):
-        """To'siq smena oynasi va server so'rovidan OLDIN turadi."""
+        """To'siq smena oynasidan va smenani yopishdan OLDIN turadi.
+        (1.19.0: yopishda server so'rovi yo'q — `backend.flush()` olib
+        tashlangan, smena kassaning o'zida yopiladi.)"""
         source = (Path(__file__).parent / "main.py").read_text(encoding="utf-8")
         body = source[source.index("    def close_shift() -> None:"):]
         body = body[:body.index("    backend.close_shift = close_shift")]
         block = body.index("parked_close_block(store.parked_count())")
-        self.assertLess(block, body.index("backend.flush()"))
-        self.assertLess(block, body.index("CloseShiftDialog(stuck"))
-        self.assertLess(block, body.index("backend.finish_shift("))
-        self.assertIn("open_parked()", body[block:body.index("backend.flush()")])
+        dialog = body.index("CloseShiftDialog(")
+        self.assertLess(block, dialog)
+        self.assertLess(dialog, body.index("backend.finish_shift("))
+        self.assertIn("open_parked()", body[block:dialog])
+
+
+def load_tests(loader, standard_tests, pattern):
+    """CI (.github/workflows) test modullarini NOMMA-NOM sanaydi va bu modul
+    o'sha ro'yxatda bor. Smena jurnali (pos.test_smena_jurnali) va butun-dastur
+    (pos.test_dastur_ochilishi) testlari ham chiqarishdan oldin albatta yursin
+    deb, bu modul nomi bilan yurgizilganda ular ham qo'shiladi.
+
+    `python -m unittest discover` da (pattern berilgan) qo'shilmaydi — u yerda
+    o'sha testlar o'z fayllaridan yuradi, ikki marta emas.
+    """
+    if pattern is None:
+        import pos.test_dastur_ochilishi
+        import pos.test_smena_jurnali
+
+        for module in (pos.test_smena_jurnali, pos.test_dastur_ochilishi):
+            standard_tests.addTests(loader.loadTestsFromModule(module))
+    return standard_tests

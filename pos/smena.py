@@ -56,6 +56,26 @@ def offline_banner(text: str, width: int) -> str:
     return "\n".join(head) + "\n" + text
 
 
+def unsent_banner(text: str, width: int, unsent: int) -> str:
+    """Hisobot tepasiga: nechta chek hali serverga yetmagan (1.19.0).
+
+    Smena hisoboti har doim kassaning o'zidagi cheklardan chiziladi —
+    internet bo'lsa ham, bo'lmasa ham bir xil. Hamma chek serverga yetgan
+    bo'lsa hech narsa qo'shilmaydi; yetmagani bo'lsa egasi qog'ozni qo'liga
+    olganda birinchi bo'lib shuni ko'radi.
+    """
+    if not unsent or unsent <= 0:
+        return text
+    head = [
+        _line("=", width),
+        _center(f"{unsent} TA CHEK SERVERGA YETMAGAN", width),
+        _center("Ular kassada saqlangan,", width),
+        _center("o'zi yuboriladi.", width),
+        _line("=", width),
+    ]
+    return "\n".join(head) + "\n" + text
+
+
 def _when(raw: str) -> datetime:
     """ISO vaqtni o'qiydi. Buzuq bo'lsa — hozirgi vaqt (chek chiqaverssin)."""
     try:

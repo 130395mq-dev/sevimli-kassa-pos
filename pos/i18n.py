@@ -215,6 +215,21 @@ _RU: dict[str, str] = {
     "Smena (oflayn)": "Смена (оффлайн)",
     "yuborildi": "отправлен",
     "navbatda": "в очереди",
+    "rad etildi": "отклонён",
+    "Ochiq smena yo'q": "Нет открытой смены",
+    "DIQQAT: {n} ta chekni server qabul qilmadi. Savdoni davom "
+    "ettiring — cheklar kassada saqlanadi. Menejerga ayting.":
+        "ВНИМАНИЕ: сервер не принял чеки ({n} шт.). Продолжайте продажи — "
+        "чеки сохранены на кассе. Сообщите менеджеру.",
+    "DIQQAT: smena serverga yetmadi. Savdoni davom ettiring — "
+    "cheklar kassada saqlanadi. Menejerga ayting.":
+        "ВНИМАНИЕ: смена не дошла до сервера. Продолжайте продажи — "
+        "чеки сохранены на кассе. Сообщите менеджеру.",
+    "DIQQAT: bu smena serverda yopilgan (boshqa kompyuterdan). "
+    "Smenani yoping va yangi smena oching.":
+        "ВНИМАНИЕ: эта смена закрыта на сервере (с другого компьютера). "
+        "Закройте смену и откройте новую.",
+    "Sabab: {r}": "Причина: {r}",
     "Qayta chop etish": "ПОВТОРНАЯ ПЕЧАТЬ",
     "Chek qayta chop etildi": "Чек напечатан повторно",
     "Printer javob bermadi. Chek faylga saqlandi: {p}":
