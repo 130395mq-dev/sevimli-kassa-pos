@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -881,6 +882,35 @@ class ParkedCloseBlockTest(unittest.TestCase):
         self.assertLess(block, dialog)
         self.assertLess(dialog, body.index("backend.finish_shift("))
         self.assertIn("open_parked()", body[block:dialog])
+
+
+def _ci_annotations() -> None:
+    """GitHub Actions'da yiqilgan testni «::error» izohi qilib ham chiqaradi.
+
+    Windows tekshiruvi faqat CI'da yuradi; yiqilgan test nomi va sababi shu
+    izohda PR sahifasining o'zida ko'rinadi (jurnalni titkilash shart emas).
+    Boshqa joyda (kassada, kompyuterda) hech narsa o'zgarmaydi."""
+    if os.environ.get("GITHUB_ACTIONS") != "true" or getattr(unittest, "_sevimli_ci", False):
+        return
+    unittest._sevimli_ci = True
+
+    def wrap(kind, original):
+        def hook(self, test, err):
+            original(self, test, err)
+            try:
+                text = f"{kind}: {test.id()}\n{self._exc_info_to_string(err, test)[-1400:]}"
+                text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                print(f"::error title={kind} {test.id()[-90:]}::{text}", flush=True)
+            except Exception:  # noqa: BLE001 — izoh chiqmasa ham test natijasi o'zgarmaydi
+                pass
+        return hook
+
+    result = unittest.TextTestResult
+    result.addError = wrap("ERROR", result.addError)
+    result.addFailure = wrap("FAIL", result.addFailure)
+
+
+_ci_annotations()
 
 
 def load_tests(loader, standard_tests, pattern):

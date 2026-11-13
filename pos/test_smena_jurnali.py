@@ -379,6 +379,7 @@ class BirXilIshlashTest(JurnalBase):
         self.soat.t = Soat().t
         self.server = SoxtaServer(self.soat, himoya=self.HIMOYA)
         self.k = Kassa(self.server, self.soat)
+        self.addCleanup(self.k.close)
         _, _, vaqt_oflayn = self._ikki_kun(online=False)
         oflayn = self._server_holati()
         chaqiruv_oflayn = [w for w, _ in self.server.calls if w in ("open", "close")]
@@ -843,14 +844,16 @@ class EskiHolatdanKochishTest(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        # Windows ochiq faylni o'chirtirmaydi: papka FAQAT hamma baza yopilgandan
+        # keyin tozalanadi. Shuning uchun tozalash eng birinchi ro'yxatga olinadi
+        # (addCleanup teskari tartibda bajariladi — demak eng oxirida).
+        self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "kassa.db"
         store = Store(self.path)                   # yangi baza — keyin «eskiga» aylantiramiz
+        self.addCleanup(store.close)
         store.db.execute("DELETE FROM shifts")
         store.set("journal_v1", "")
         self.old = store
-
-    def tearDown(self):
-        self.tmp.cleanup()
 
     def _upgrade(self) -> Store:
         self.old.close()
